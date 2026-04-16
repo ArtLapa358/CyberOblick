@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0a0f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>КиберОблик — 3D Аватар</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Loading -->
+  <div id="loader" class="loader">
+    <div class="loader__ring"></div>
+    <div class="loader__text">
+      <span class="loader__logo">КИБЕР<span class="accent">ОБЛИК</span></span>
+      <span class="loader__status">Инициализация системы...</span>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="app hidden">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="topbar__logo">К<span class="accent">О</span></span>
+        <span class="topbar__title">КиберОблик</span>
+      </div>
+      <div class="topbar__actions">
+        <button class="topbar__btn" id="btn-tier"><span class="tier-badge free">FREE</span></button>
+        <button class="topbar__btn topbar__btn--icon" id="btn-settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 3D Viewport -->
+    <main class="viewport" id="viewport">
+      <canvas id="three-canvas"></canvas>
+
+      <!-- Camera PiP — draggable + resizable -->
+      <div class="cam-pip" id="cam-pip">
+        <video id="cam-video" autoplay playsinline muted></video>
+        <div class="cam-pip__label">CAM</div>
+        <div class="cam-pip__fps" id="fps-counter">-- FPS</div>
+        <div class="cam-pip__resize" id="pip-resize-handle"></div>
+      </div>
+
+      <!-- Tracking Status -->
+      <div class="track-status" id="track-status">
+        <div class="track-status__item" id="track-face">
+          <span class="track-dot"></span> Лицо
+        </div>
+        <div class="track-status__item" id="track-body">
+          <span class="track-dot"></span> Тело
+        </div>
+      </div>
+
+      <!-- Watermark -->
+      <div class="watermark" id="watermark">
+        <span>КиберОблик</span><span class="watermark__sub">FREE</span>
+      </div>
+    </main>
+
+    <!-- Bottom Panel -->
+    <nav class="bottom-panel">
+      <div class="bottom-panel__tabs">
+        <button class="tab active" data-tab="capture">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Захват</span>
+        </button>
+        <button class="tab" data-tab="equip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
+          <span>Стиль</span>
+        </button>
+        <button class="tab" data-tab="team">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+          <span>Команда</span>
+        </button>
+        <button class="tab" data-tab="export">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          <span>Экспорт</span>
+        </button>
+      </div>
+
+      <!-- Capture Panel -->
+      <div class="tab-panel active" id="panel-capture">
+        <div class="panel-row">
+          <button class="btn btn--primary btn--lg" id="btn-start-cam">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            Запустить камеру
+          </button>
+        </div>
+        <div class="panel-row panel-row--split">
+          <label class="toggle">
+            <input type="checkbox" id="toggle-face" checked>
+            <span class="toggle__slider"></span>
+            <span class="toggle__label">Лицо</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-body" checked>
+            <span class="toggle__slider"></span>
+            <span class="toggle__label">Тело</span>
+          </label>
+        </div>
+        <div class="panel-row">
+          <label class="slider-group">
+            <span class="slider-group__label">Чувствительность</span>
+            <input type="range" min="0.1" max="2" step="0.1" value="1" id="sensitivity-slider" class="slider">
+            <span class="slider-group__value" id="sensitivity-val">1.0</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Equipment Panel -->
+      <div class="tab-panel" id="panel-equip">
+        <h3 class="panel-title">Снаряжение</h3>
+        <div class="equip-grid" id="equip-grid">
+          <button class="equip-card" data-equip="helmet-cyber"><div class="equip-card__icon">🪖</div><span>Кибер-шлем</span></button>
+          <button class="equip-card" data-equip="visor-holo"><div class="equip-card__icon">🥽</div><span>Голо-визор</span></button>
+          <button class="equip-card" data-equip="mask-neon"><div class="equip-card__icon">🎭</div><span>Неон-маска</span></button>
+          <button class="equip-card" data-equip="ears-cat"><div class="equip-card__icon">😺</div><span>Кибер-уши</span></button>
+          <button class="equip-card" data-equip="jacket-tech"><div class="equip-card__icon">🧥</div><span>Тех-куртка</span></button>
+          <button class="equip-card" data-equip="wings-holo"><div class="equip-card__icon">🦋</div><span>Голо-крылья</span></button>
+        </div>
+      </div>
+
+      <!-- Team Panel -->
+      <div class="tab-panel" id="panel-team">
+        <h3 class="panel-title">Команда</h3>
+        <div class="team-list" id="team-list"></div>
+        <div class="panel-row" style="margin-top:12px;">
+          <label class="slider-group">
+            <span class="slider-group__label">Основной цвет</span>
+            <input type="color" id="color-primary" value="#00F0FF" class="color-input">
+          </label>
+          <label class="slider-group">
+            <span class="slider-group__label">Акцент</span>
+            <input type="color" id="color-accent" value="#8B00FF" class="color-input">
+          </label>
+        </div>
+      </div>
+
+      <!-- Export Panel -->
+      <div class="tab-panel" id="panel-export">
+        <h3 class="panel-title">Экспорт</h3>
+        <div class="panel-row">
+          <button class="btn btn--primary btn--lg" id="btn-record">
+            <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
+            Запись (WEBM)
+          </button>
+        </div>
+        <div class="panel-row">
+          <button class="btn btn--outline btn--lg" id="btn-stream">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Стрим (WebRTC)
+          </button>
+        </div>
+        <div class="panel-row">
+          <label class="slider-group" style="width:100%;">
+            <span class="slider-group__label">ID комнаты</span>
+            <input type="text" id="stream-room-id" placeholder="Введите ID комнаты" class="text-input">
+          </label>
+        </div>
+        <div class="panel-row">
+          <button class="btn btn--outline btn--lg" id="btn-join-room">
+            Подключиться
+          </button>
+        </div>
+        <p class="panel-note" id="export-note">Стрим в реальном времени через WebRTC</p>
+      </div>
+    </nav>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay hidden" id="modal-settings">
+      <div class="modal">
+        <div class="modal__header">
+          <h2>Настройки</h2>
+          <button class="modal__close" id="btn-close-settings">&times;</button>
+        </div>
+        <div class="modal__body">
+          <label class="toggle">
+            <input type="checkbox" id="toggle-pro">
+            <span class="toggle__slider"></span>
+            <span class="toggle__label">Pro-режим (демо)</span>
+          </label>
+          <label class="slider-group">
+            <span class="slider-group__label">Качество рендера</span>
+            <select id="render-quality" class="select-input">
+              <option value="low">Низкое (60 FPS)</option>
+              <option value="medium" selected>Среднее (30 FPS)</option>
+              <option value="high">Высокое (30 FPS)</option>
+            </select>
+          </label>
+          <button class="btn btn--primary" id="btn-save-avatar">Сохранить Облик</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="/js/mocap.js"></script>
+  <script src="/js/avatar3d.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>КиберОблик — Зритель</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a0f; color: #e8e8f0;
+      font-family: 'Exo 2', sans-serif;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; padding: 20px;
+    }
+    .logo {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 24px; font-weight: 900;
+      letter-spacing: 4px; margin-bottom: 8px;
+    }
+    .logo span { color: #00f0ff; }
+    .subtitle {
+      font-size: 12px; color: #8888a8;
+      letter-spacing: 2px; text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+    #status {
+      font-size: 14px; color: #8888a8;
+      margin-bottom: 16px;
+    }
+    #status.connected { color: #00ff88; }
+    #status.error { color: #ff1744; }
+    .video-wrap {
+      width: 100%; max-width: 800px;
+      aspect-ratio: 16/9;
+      background: #12121a;
+      border: 1px solid rgba(0,240,255,0.15);
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+    }
+    #remote-video {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+    .live-badge {
+      position: absolute; top: 12px; left: 12px;
+      padding: 4px 10px; border-radius: 6px;
+      background: rgba(255,23,68,0.3);
+      border: 1px solid rgba(255,23,68,0.5);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px; font-weight: 700;
+      color: #ff1744; letter-spacing: 2px;
+      display: none;
+    }
+    .live-badge.active { display: block; animation: pulse 1.5s ease infinite; }
+    @keyframes pulse { 50% { opacity: 0.5; } }
+    .room-info {
+      margin-top: 16px; text-align: center;
+      font-size: 12px; color: #555570;
+    }
+    .room-id {
+      font-family: 'Orbitron', sans-serif;
+      color: #00f0ff; letter-spacing: 2px;
+    }
+    .help {
+      margin-top: 24px; max-width: 500px;
+      font-size: 12px; color: #555570;
+      line-height: 1.8; text-align: center;
+    }
+    .help strong { color: #8888a8; }
+  </style>
+</head>
+<body>
+  <div class="logo">КИБЕР<span>ОБЛИК</span></div>
+  <div class="subtitle">Просмотр стрима</div>
+
+  <div id="status">Подключение к комнате...</div>
+
+  <div class="video-wrap">
+    <video id="remote-video" autoplay playsinline></video>
+    <div class="live-badge" id="live-badge">LIVE</div>
+  </div>
+
+  <div class="room-info">
+    Комната: <span class="room-id" id="room-id-display">---</span>
+  </div>
+
+  <div class="help">
+    <strong>Как это работает:</strong><br>
+    Стример в приложении КиберОблик нажимает «Стрим (WebRTC)»,
+    получает ID комнаты и делится ссылкой.<br>
+    Вы открываете <strong>/watch/&lt;roomId&gt;</strong> — и видите аватар в реальном времени.
+  </div>
+
+  <script>
+    (async function() {
+      const pathParts = window.location.pathname.split('/');
+      const roomId = pathParts[pathParts.length - 1];
+      const statusEl = document.getElementById('status');
+      const videoEl = document.getElementById('remote-video');
+      const liveBadge = document.getElementById('live-badge');
+      document.getElementById('room-id-display').textContent = roomId;
+
+      if (!roomId || roomId === 'watch') {
+        statusEl.textContent = 'Укажите ID комнаты в URL: /watch/<roomId>';
+        statusEl.className = 'error';
+        return;
+      }
+
+      try {
+        // Check if room exists
+        const roomRes = await fetch(`/api/rtc/room/${roomId}`);
+        if (!roomRes.ok) {
+          statusEl.textContent = `Комната ${roomId} не найдена`;
+          statusEl.className = 'error';
+          return;
+        }
+        const roomInfo = await roomRes.json();
+        if (!roomInfo.active) {
+          statusEl.textContent = 'Стрим завершён';
+          statusEl.className = 'error';
+          return;
+        }
+
+        statusEl.textContent = 'Получение SDP offer...';
+
+        // Get streamer's offer
+        const offerRes = await fetch(`/api/rtc/room/${roomId}/offer`);
+        const offer = await offerRes.json();
+        if (!offer) {
+          statusEl.textContent = 'Стрим ещё не начат — ожидание...';
+          // Poll for offer
+          await pollForOffer(roomId);
+          return;
+        }
+
+        await connectAsViewer(roomId, offer);
+
+      } catch (err) {
+        statusEl.textContent = 'Ошибка подключения: ' + err.message;
+        statusEl.className = 'error';
+      }
+
+      async function pollForOffer(roomId) {
+        let attempts = 0;
+        const interval = setInterval(async () => {
+          attempts++;
+          if (attempts > 60) { // 30 seconds
+            clearInterval(interval);
+            statusEl.textContent = 'Таймаут ожидания стрима';
+            statusEl.className = 'error';
+            return;
+          }
+          try {
+            const res = await fetch(`/api/rtc/room/${roomId}/offer`);
+            const offer = await res.json();
+            if (offer) {
+              clearInterval(interval);
+              await connectAsViewer(roomId, offer);
+            }
+          } catch (e) {}
+        }, 500);
+      }
+
+      async function connectAsViewer(roomId, offer) {
+        statusEl.textContent = 'Устанавливаем WebRTC соединение...';
+
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        // When we get the remote stream
+        pc.ontrack = (event) => {
+          videoEl.srcObject = event.streams[0];
+          statusEl.textContent = 'Подключено!';
+          statusEl.className = 'connected';
+          liveBadge.classList.add('active');
+        };
+
+        // Send our ICE candidates as viewer
+        pc.onicecandidate = async (event) => {
+          if (event.candidate) {
+            await fetch(`/api/rtc/room/${roomId}/candidate/viewer`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(event.candidate)
+            });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            statusEl.textContent = 'Соединение потеряно';
+            statusEl.className = 'error';
+            liveBadge.classList.remove('active');
+          }
+        };
+
+        // Set remote offer & create answer
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        // Send answer to server
+        await fetch(`/api/rtc/room/${roomId}/answer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(answer)
+        });
+
+        // Poll for streamer's ICE candidates
+        let candidateIdx = 0;
+        const pollCandidates = setInterval(async () => {
+          try {
+            const res = await fetch(`/api/rtc/room/${roomId}/candidates/streamer?since=${candidateIdx}`);
+            const candidates = await res.json();
+            for (const c of candidates) {
+              await pc.addIceCandidate(new RTCIceCandidate(c));
+              candidateIdx++;
+            }
+          } catch (e) {}
+
+          if (pc.connectionState === 'connected') {
+            clearInterval(pollCandidates);
+          }
+        }, 500);
+      }
+    })();
+  </script>
+</body>
+</html>
