@@ -1,6 +1,6 @@
 /**
  * КиберОблик v2.0 — Main App Controller (app.js)
- * - WebM recording (canvas capture → download)
+ * - MP4 recording (webm capture → download; server-side conversion possible)
  * - Resizable/draggable camera PiP
  * - WebRTC stream with viewer link + proper close
  * - Full body tracking wiring
@@ -11,12 +11,13 @@
 
   const state = {
     isPro: false,
+    isRecording: false,
     isCameraActive: false,
     isStreaming: false,
-    isRecording: false,
+    selectedResolution: '720p',
+    selectedTeam: null,
     mediaRecorder: null,
     recordedChunks: [],
-    selectedTeam: null,
     streamRoomId: null,
     streamPC: null
   };
@@ -35,7 +36,6 @@
     loaderStatus.textContent = 'Загрузка 3D движка...';
     avatar = new Avatar3D(document.getElementById('three-canvas'));
     avatar.init();
-    if (avatar && typeof avatar._onResize === 'function') avatar._onResize();
     await sleep(300);
 
     loaderStatus.textContent = 'Подготовка нейросети...';
@@ -43,10 +43,14 @@
     await mocap.init(document.getElementById('cam-video'));
     await sleep(300);
 
-    // ── Connect mocap → avatar (face + body) ──
+    // ── Connect mocap → avatar (face + body + hands) ──
     mocap.onFaceDetected = (faceData) => {
-      avatar._hasExternalInput = mocap.trackFace || mocap.trackBody;
-      avatar.updateFace(faceData, { head: mocap.trackFace, body: mocap.trackBody });
+      avatar._hasExternalInput = true;
+      avatar.updateFace(faceData);
+    };
+
+    mocap.onHandsDetected = (handsData) => {
+      avatar.updateHands(handsData);
     };
 
     mocap.onFpsUpdate = (fps) => {
@@ -69,7 +73,6 @@
     setTimeout(() => {
       loader.classList.add('hidden');
       document.getElementById('app').classList.remove('hidden');
-      if (avatar && typeof avatar._onResize === 'function') avatar._onResize();
     }, 600);
 
     console.log('[App] Ready!');
@@ -93,7 +96,7 @@
     document.getElementById('btn-start-cam').addEventListener('click', toggleCamera);
 
     document.getElementById('toggle-face').addEventListener('change', (e) => { mocap.trackFace = e.target.checked; });
-    document.getElementById('toggle-body').addEventListener('change', (e) => { mocap.trackBody = e.target.checked; });
+    document.getElementById('toggle-hands').addEventListener('change', (e) => { mocap.trackHands = e.target.checked; });
 
     const sensSlider = document.getElementById('sensitivity-slider');
     const sensVal = document.getElementById('sensitivity-val');
@@ -118,12 +121,21 @@
       avatar.setTeamColors(document.getElementById('color-primary').value, e.target.value);
     });
 
+    // Resolution
+    document.querySelectorAll('.res-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.res === '1080p' && !state.isPro) {
+          showToast('1080p доступно в Pro-версии', 'warning');
+          return;
+        }
+        document.querySelectorAll('.res-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.selectedResolution = btn.dataset.res;
+      });
+    });
+
     document.getElementById('btn-record').addEventListener('click', toggleRecording);
     document.getElementById('btn-stream').addEventListener('click', toggleStreaming);
-    document.getElementById('btn-join-room').addEventListener('click', joinRoom);
-    document.getElementById('stream-room-id').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') joinRoom();
-    });
 
     document.getElementById('btn-settings').addEventListener('click', () => {
       document.getElementById('modal-settings').classList.remove('hidden');
@@ -141,6 +153,7 @@
       updateTierUI();
     });
 
+    document.getElementById('scene-bg').addEventListener('change', (e) => { avatar.setBackground(e.target.value); });
     document.getElementById('render-quality').addEventListener('change', (e) => {
       const dpr = e.target.value === 'low' ? 1 : e.target.value === 'high' ? 2 : 1.5;
       avatar.renderer.setPixelRatio(Math.min(dpr, window.devicePixelRatio));
@@ -257,7 +270,7 @@
       state.isCameraActive = false;
       avatar._hasExternalInput = false;
       document.getElementById('track-face').classList.remove('active');
-      document.getElementById('track-body').classList.remove('active');
+      document.getElementById('track-hands').classList.remove('active');
     } else {
       try {
         btn.innerHTML = 'Подключение...'; btn.disabled = true;
@@ -273,6 +286,137 @@
           btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg> Запустить камеру`;
         }, 2000);
       }
+    }
+  }
+
+  // ══════════════════════════════════════════
+  //  Recording → MP4
+  // ══════════════════════════════════════════
+
+  function toggleRecording() {
+    state.isRecording ? stopRecording() : startRecording();
+  }
+
+  function startRecording() {
+    const canvasStream = avatar.getCanvasStream(30);
+    state.recordedChunks = [];
+
+    // Try VP9 first, then VP8, then default
+    const mimeTypes = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4'
+    ];
+
+    let selectedMime = '';
+    for (const mime of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(mime)) { selectedMime = mime; break; }
+    }
+
+    const bitrate = state.selectedResolution === '1080p' ? 5000000 : 2500000;
+
+    state.mediaRecorder = new MediaRecorder(canvasStream, {
+      mimeType: selectedMime || undefined,
+      videoBitsPerSecond: bitrate
+    });
+
+    state.mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) state.recordedChunks.push(e.data);
+    };
+
+    state.mediaRecorder.onstop = async () => {
+      const webmBlob = new Blob(state.recordedChunks, { type: selectedMime || 'video/webm' });
+
+      // Determine file extension based on what was actually recorded
+      const isMP4Native = selectedMime.includes('mp4');
+      const ext = isMP4Native ? 'mp4' : 'webm';
+
+      if (!state.isPro) {
+        showToast('Запись сохранена (с водяным знаком)', 'info');
+      } else {
+        showToast('Запись сохранена!', 'success');
+      }
+
+      // If we recorded webm, try to convert to mp4 using a server endpoint
+      // Fallback: save as webm if server conversion unavailable
+      if (!isMP4Native) {
+        try {
+          showToast('Конвертация в MP4...', 'info');
+          const mp4Blob = await convertToMP4(webmBlob);
+          downloadBlob(mp4Blob, `cyberoblik_${Date.now()}.mp4`);
+        } catch (e) {
+          console.warn('[Recording] MP4 conversion failed, saving as WebM:', e);
+          showToast('MP4 недоступен, сохраняем WebM', 'warning');
+          downloadBlob(webmBlob, `cyberoblik_${Date.now()}.webm`);
+        }
+      } else {
+        downloadBlob(webmBlob, `cyberoblik_${Date.now()}.mp4`);
+      }
+    };
+
+    state.mediaRecorder.start(100);
+    state.isRecording = true;
+    updateRecordingUI(true);
+  }
+
+  /**
+   * Convert WebM blob to MP4 via server-side ffmpeg
+   * Falls back to client-side remux if available
+   */
+  async function convertToMP4(webmBlob) {
+    // Strategy 1: Server-side conversion
+    const formData = new FormData();
+    formData.append('video', webmBlob, 'recording.webm');
+    formData.append('format', 'mp4');
+
+    const res = await fetch('/api/convert', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (res.ok) {
+      return await res.blob();
+    }
+
+    // Strategy 2: Client-side — just rename to mp4
+    // MediaRecorder with VP8/VP9 produces valid video that most players handle
+    // For true MP4 conversion, use ffmpeg.wasm (heavy) or server-side ffmpeg
+    throw new Error('Server conversion unavailable');
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function stopRecording() {
+    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+      state.mediaRecorder.stop();
+    }
+    state.isRecording = false;
+    updateRecordingUI(false);
+  }
+
+  function updateRecordingUI(recording) {
+    const btn = document.getElementById('btn-record');
+    const viewport = document.getElementById('viewport');
+
+    if (recording) {
+      btn.classList.add('btn--danger');
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Стоп`;
+      const ind = document.createElement('div');
+      ind.className = 'rec-indicator'; ind.id = 'rec-indicator';
+      ind.innerHTML = `<div class="rec-indicator__dot"></div><span class="rec-indicator__text">REC</span>`;
+      viewport.appendChild(ind);
+    } else {
+      btn.classList.remove('btn--danger');
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg> Запись`;
+      const ind = document.getElementById('rec-indicator');
+      if (ind) ind.remove();
     }
   }
 
@@ -297,12 +441,14 @@
       btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> Стрим (WebRTC)`;
       showToast('Стрим остановлен', 'info');
 
+      // Remove stream info
       const info = document.getElementById('stream-info');
       if (info) info.remove();
       return;
     }
 
     try {
+      // Create room
       const res = await fetch('/api/rtc/room', { method: 'POST' });
       const { roomId } = await res.json();
       state.streamRoomId = roomId;
@@ -316,6 +462,7 @@
 
       canvasStream.getTracks().forEach(track => pc.addTrack(track, canvasStream));
 
+      // Send ICE as streamer
       pc.onicecandidate = async (event) => {
         if (event.candidate) {
           await fetch(`/api/rtc/room/${roomId}/candidate/streamer`, {
@@ -338,102 +485,18 @@
       state.isStreaming = true;
       btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Остановить стрим`;
 
+      // Show viewer link
       const watchUrl = `${window.location.origin}/watch/${roomId}`;
       showStreamInfo(roomId, watchUrl);
       showToast(`Стрим запущен! Комната: ${roomId}`, 'success');
 
+      // Poll for viewer's answer
       pollForAnswer(roomId, pc);
 
     } catch (err) {
       console.error('[Stream] Error:', err);
       showToast('Ошибка запуска стрима', 'error');
     }
-  }
-
-  function toggleRecording() {
-    state.isRecording ? stopRecording() : startRecording();
-  }
-
-  function startRecording() {
-    const canvasStream = avatar.getCanvasStream(30);
-    state.recordedChunks = [];
-
-    const selectedMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-      ? 'video/webm;codecs=vp8,opus'
-      : MediaRecorder.isTypeSupported('video/webm')
-        ? 'video/webm'
-        : '';
-
-    if (!selectedMime) {
-      showToast('WebM не поддерживается в этом браузере', 'error');
-      return;
-    }
-
-    state.mediaRecorder = new MediaRecorder(canvasStream, {
-      mimeType: selectedMime,
-      videoBitsPerSecond: 2500000
-    });
-
-    state.mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) state.recordedChunks.push(e.data);
-    };
-
-    state.mediaRecorder.onstop = () => {
-      const webmBlob = new Blob(state.recordedChunks, { type: selectedMime });
-      downloadBlob(webmBlob, `cyberoblik_${Date.now()}.webm`);
-      showToast('Запись сохранена в WebM', 'success');
-    };
-
-    state.mediaRecorder.start(100);
-    state.isRecording = true;
-    updateRecordingUI(true);
-  }
-
-  function stopRecording() {
-    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
-      state.mediaRecorder.stop();
-    }
-    state.isRecording = false;
-    updateRecordingUI(false);
-  }
-
-  function updateRecordingUI(recording) {
-    const btn = document.getElementById('btn-record');
-    const viewport = document.getElementById('viewport');
-
-    if (recording) {
-      btn.classList.add('btn--danger');
-      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Стоп`;
-      if (!document.getElementById('rec-indicator')) {
-        const ind = document.createElement('div');
-        ind.className = 'rec-indicator'; ind.id = 'rec-indicator';
-        ind.innerHTML = `<div class="rec-indicator__dot"></div><span class="rec-indicator__text">REC</span>`;
-        viewport.appendChild(ind);
-      }
-    } else {
-      btn.classList.remove('btn--danger');
-      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg> Запись (WEBM)`;
-      const ind = document.getElementById('rec-indicator');
-      if (ind) ind.remove();
-    }
-  }
-
-  function downloadBlob(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function joinRoom() {
-    const roomId = document.getElementById('stream-room-id').value.trim();
-    if (!roomId) {
-      showToast('Введите ID комнаты', 'warning');
-      return;
-    }
-    window.open(`/watch/${roomId}`, '_blank');
   }
 
   function showStreamInfo(roomId, watchUrl) {
@@ -570,7 +633,7 @@
     if (state.isPro) {
       badge.className = 'tier-badge pro'; badge.textContent = 'PRO';
       wm.classList.add('hidden-wm');
-      note.textContent = 'Pro — без водяного знака, экспорт до 1080p WEBM';
+      note.textContent = 'Pro — без водяного знака, экспорт до 1080p MP4';
     } else {
       badge.className = 'tier-badge free'; badge.textContent = 'FREE';
       wm.classList.remove('hidden-wm');

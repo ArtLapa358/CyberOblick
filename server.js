@@ -3,6 +3,8 @@
  * WebRTC Signaling + Viewer page + MP4 export
  */
 
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -10,10 +12,16 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Health check (required by most cloud hosts)
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime(), version: '2.0' });
+});
 
 const avatarConfigs = new Map();
 const signalingRooms = new Map();
@@ -146,10 +154,10 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(`\n  ╔══════════════════════════════════════╗`);
   console.log(`  ║  🎮 КиберОблик v2.0                 ║`);
-  console.log(`  ║  http://localhost:${PORT}              ║`);
+  console.log(`  ║  Listening on ${HOST}:${PORT}       ║`);
   console.log(`  ║  Viewer: /watch/<roomId>             ║`);
   console.log(`  ╚══════════════════════════════════════╝\n`);
 });
