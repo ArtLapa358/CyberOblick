@@ -56,8 +56,8 @@
         <div class="track-status__item" id="track-face">
           <span class="track-dot"></span> Лицо
         </div>
-        <div class="track-status__item" id="track-hands">
-          <span class="track-dot"></span> Руки
+        <div class="track-status__item" id="track-body">
+          <span class="track-dot"></span> Тело
         </div>
       </div>
 
@@ -100,12 +100,12 @@
           <label class="toggle">
             <input type="checkbox" id="toggle-face" checked>
             <span class="toggle__slider"></span>
-            <span class="toggle__label">Лицо + Тело</span>
+            <span class="toggle__label">Лицо</span>
           </label>
           <label class="toggle">
-            <input type="checkbox" id="toggle-hands" checked>
+            <input type="checkbox" id="toggle-body" checked>
             <span class="toggle__slider"></span>
-            <span class="toggle__label">Руки</span>
+            <span class="toggle__label">Тело</span>
           </label>
         </div>
         <div class="panel-row">
@@ -149,14 +149,10 @@
       <!-- Export Panel -->
       <div class="tab-panel" id="panel-export">
         <h3 class="panel-title">Экспорт</h3>
-        <div class="panel-row panel-row--split">
-          <button class="btn btn--outline res-btn active" data-res="720p">720p</button>
-          <button class="btn btn--outline res-btn" data-res="1080p">1080p <span class="pro-badge">PRO</span></button>
-        </div>
         <div class="panel-row">
           <button class="btn btn--primary btn--lg" id="btn-record">
             <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
-            Запись (MP4)
+            Запись (WEBM)
           </button>
         </div>
         <div class="panel-row">
@@ -165,7 +161,18 @@
             Стрим (WebRTC)
           </button>
         </div>
-        <p class="panel-note" id="export-note">Бесплатная версия — с водяным знаком</p>
+        <div class="panel-row">
+          <label class="slider-group" style="width:100%;">
+            <span class="slider-group__label">ID комнаты</span>
+            <input type="text" id="stream-room-id" placeholder="Введите ID комнаты" class="text-input">
+          </label>
+        </div>
+        <div class="panel-row">
+          <button class="btn btn--outline btn--lg" id="btn-join-room">
+            Подключиться
+          </button>
+        </div>
+        <p class="panel-note" id="export-note">Стрим в реальном времени через WebRTC</p>
       </div>
     </nav>
 
@@ -190,15 +197,6 @@
               <option value="high">Высокое (30 FPS)</option>
             </select>
           </label>
-          <label class="slider-group">
-            <span class="slider-group__label">Фон сцены</span>
-            <select id="scene-bg" class="select-input">
-              <option value="cyber-grid">Кибер-сетка</option>
-              <option value="dark">Тёмный</option>
-              <option value="gradient">Градиент</option>
-              <option value="transparent">Прозрачный</option>
-            </select>
-          </label>
           <button class="btn btn--primary" id="btn-save-avatar">Сохранить Облик</button>
         </div>
       </div>
@@ -207,7 +205,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="/js/mocap.js"></script>
   <script src="/js/avatar3d.js"></script>

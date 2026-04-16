@@ -286,6 +286,12 @@ html, body {
 }
 .select-input:focus { border-color: var(--accent); }
 
+.text-input {
+  width: 100%; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.05);
+  color: var(--text-primary); font-family: var(--font-body); font-size: 13px;
+}
+
 .color-input {
   width: 40px; height: 32px; border: 2px solid rgba(255,255,255,0.1);
   border-radius: 6px; cursor: pointer; background: transparent; padding: 0;
@@ -370,4 +376,19 @@ html, body {
   .topbar__title { display: none; }
   .bottom-panel__tabs { height: 44px; }
   .tab-panel { max-height: 120px; }
+}
+
+@media (max-width: 760px) {
+  .bottom-panel { padding: 12px 12px calc(14px + var(--safe-bottom)); }
+  .topbar { padding: 0 12px; }
+  .topbar__brand { gap: 8px; }
+  .cam-pip { width: 100px; height: 76px; top: 8px; right: 8px; }
+  .bottom-panel__tabs { gap: 4px; }
+  .panel-row--split { flex-direction: column; }
+  .panel-row { margin-bottom: 10px; }
+  .slider-group { gap: 4px; }
+  .slider-group__label, .panel-note, .toggle__label { font-size: 12px; }
+  .btn { padding: 12px 16px; font-size: 13px; }
+  .btn--lg { padding: 12px; }
+  .text-input, .select-input { font-size: 13px; }
 }

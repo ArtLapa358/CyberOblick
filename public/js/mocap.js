@@ -1,22 +1,19 @@
 /**
  * КиберОблик v2.0 — Motion Capture Module (mocap.js)
- * MediaPipe Face Mesh + Hands + Body estimation
- * Extracts: head rotation, expressions, arm IK, torso lean, shoulder estimation
+ * MediaPipe Face Mesh + Body estimation
+ * Extracts: head rotation, expressions, torso lean, shoulder estimation
  */
 
 class MocapEngine {
   constructor() {
     this.video = null;
     this.faceMesh = null;
-    this.hands = null;
 
     this.faceLandmarks = null;
-    this.leftHandLandmarks = null;
-    this.rightHandLandmarks = null;
 
     this.isRunning = false;
     this.trackFace = true;
-    this.trackHands = true;
+    this.trackBody = true;
     this.sensitivity = 1.0;
 
     // Performance
@@ -26,7 +23,6 @@ class MocapEngine {
 
     // Callbacks
     this.onFaceDetected = null;
-    this.onHandsDetected = null;
     this.onFpsUpdate = null;
     this.onTrackingStatus = null;
 
@@ -43,22 +39,12 @@ class MocapEngine {
     });
     this.faceMesh.setOptions({
       maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      modelComplexity: 0,
+      refineLandmarks: false,
+      minDetectionConfidence: 0.4,
+      minTrackingConfidence: 0.4
     });
     this.faceMesh.onResults((r) => this._onFaceResults(r));
-
-    this.hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
-    this.hands.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-    this.hands.onResults((r) => this._onHandsResults(r));
 
     console.log('[Mocap] Models initialized');
   }
@@ -83,8 +69,6 @@ class MocapEngine {
       this.video.srcObject = null;
     }
     this.faceLandmarks = null;
-    this.leftHandLandmarks = null;
-    this.rightHandLandmarks = null;
   }
 
   async _trackingLoop() {
@@ -100,9 +84,8 @@ class MocapEngine {
     }
 
     try {
-      if (this.video.readyState >= 2) {
-        if (this.trackFace) await this.faceMesh.send({ image: this.video });
-        if (this.trackHands) await this.hands.send({ image: this.video });
+      if (this.video.readyState >= 2 && (this.trackFace || this.trackBody)) {
+        await this.faceMesh.send({ image: this.video });
       }
     } catch (e) { /* skip dropped frames */ }
 
@@ -120,33 +103,10 @@ class MocapEngine {
     } else {
       this.faceLandmarks = null;
     }
-    if (this.onTrackingStatus) this.onTrackingStatus('face', detected);
-  }
-
-  _onHandsResults(results) {
-    const detected = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
-    this.leftHandLandmarks = null;
-    this.rightHandLandmarks = null;
-
-    if (detected) {
-      results.multiHandLandmarks.forEach((landmarks, i) => {
-        const label = results.multiHandedness[i].label;
-        // MediaPipe mirrors: 'Left' label = right hand on screen → mirror back
-        if (label === 'Left') {
-          this.rightHandLandmarks = landmarks;
-        } else {
-          this.leftHandLandmarks = landmarks;
-        }
-      });
-
-      if (this.onHandsDetected) {
-        this.onHandsDetected({
-          left: this.leftHandLandmarks,
-          right: this.rightHandLandmarks
-        });
-      }
+    if (this.onTrackingStatus) {
+      this.onTrackingStatus('face', detected && this.trackFace);
+      this.onTrackingStatus('body', detected && this.trackBody);
     }
-    if (this.onTrackingStatus) this.onTrackingStatus('hands', detected);
   }
 
   /**
