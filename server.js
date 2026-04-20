@@ -1,8 +1,3 @@
-/**
- * КиберОблик v2.0 — Server (Node.js + Express)
- * WebRTC Signaling + Viewer page + MP4 export
- */
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -43,15 +38,20 @@ const teamPresets = [
 app.get('/api/teams', (req, res) => res.json(teamPresets));
 
 // ══════════════════════════════════════════
-//  WebRTC Signaling (with viewer support)
+//  WebRTC Signaling — multi-viewer architecture
+//  Each viewer gets its own peer session (peerId)
 // ══════════════════════════════════════════
 
 app.post('/api/rtc/room', (req, res) => {
   const roomId = uuidv4().slice(0, 8);
   signalingRooms.set(roomId, {
-    id: roomId, offers: [], answers: [],
-    candidates: { streamer: [], viewer: [] },
-    createdAt: Date.now(), active: true
+    id: roomId,
+    // Map<peerId, { offer, answer, streamerCandidates: [], viewerCandidates: [] }>
+    peers: new Map(),
+    // Queue of viewer peerIds that need an offer from streamer
+    pendingViewers: [],
+    createdAt: Date.now(),
+    active: true
   });
   res.json({ roomId });
 });
@@ -60,62 +60,131 @@ app.post('/api/rtc/room', (req, res) => {
 app.get('/api/rtc/room/:roomId', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json({ id: room.id, active: room.active, createdAt: room.createdAt });
+  res.json({
+    id: room.id,
+    active: room.active,
+    createdAt: room.createdAt,
+    viewers: room.peers.size
+  });
 });
 
 // Active rooms list
 app.get('/api/rtc/rooms', (req, res) => {
   const rooms = [];
-  signalingRooms.forEach(r => { if (r.active) rooms.push({ id: r.id, createdAt: r.createdAt }); });
+  signalingRooms.forEach(r => {
+    if (r.active) rooms.push({ id: r.id, createdAt: r.createdAt, viewers: r.peers.size });
+  });
   res.json(rooms);
 });
 
-// SDP offer (streamer → server)
-app.post('/api/rtc/room/:roomId/offer', (req, res) => {
+// ══════════════════════════════════════════
+//  Viewer registers — gets a unique peerId
+//  This is what viewer calls first to join
+// ══════════════════════════════════════════
+app.post('/api/rtc/room/:roomId/join', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  room.offers.push(req.body);
-  res.json({ success: true });
-});
-app.get('/api/rtc/room/:roomId/offer', (req, res) => {
-  const room = signalingRooms.get(req.params.roomId);
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json(room.offers[room.offers.length - 1] || null);
+  if (!room.active) return res.status(410).json({ error: 'Stream ended' });
+
+  const peerId = uuidv4().slice(0, 12);
+  room.peers.set(peerId, {
+    peerId,
+    offer: null,
+    answer: null,
+    streamerCandidates: [],
+    viewerCandidates: [],
+    createdAt: Date.now()
+  });
+  room.pendingViewers.push(peerId);
+  res.json({ peerId });
 });
 
-// SDP answer (viewer → server)
-app.post('/api/rtc/room/:roomId/answer', (req, res) => {
+// ══════════════════════════════════════════
+//  Streamer polls for viewers awaiting offers
+// ══════════════════════════════════════════
+app.get('/api/rtc/room/:roomId/pending-viewers', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  room.answers.push(req.body);
-  res.json({ success: true });
-});
-app.get('/api/rtc/room/:roomId/answer', (req, res) => {
-  const room = signalingRooms.get(req.params.roomId);
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  res.json(room.answers[room.answers.length - 1] || null);
+  // Atomic drain of the queue
+  const pending = room.pendingViewers.splice(0, room.pendingViewers.length);
+  res.json({ peerIds: pending });
 });
 
-// ICE candidates by role
-app.post('/api/rtc/room/:roomId/candidate/:role', (req, res) => {
+// ══════════════════════════════════════════
+//  SDP offer per-peer (streamer → viewer)
+// ══════════════════════════════════════════
+app.post('/api/rtc/room/:roomId/peer/:peerId/offer', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  const role = req.params.role === 'viewer' ? 'viewer' : 'streamer';
-  room.candidates[role].push(req.body);
+  const peer = room.peers.get(req.params.peerId);
+  if (!peer) return res.status(404).json({ error: 'Peer not found' });
+  peer.offer = req.body;
   res.json({ success: true });
 });
-app.get('/api/rtc/room/:roomId/candidates/:role', (req, res) => {
+
+app.get('/api/rtc/room/:roomId/peer/:peerId/offer', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  const role = req.params.role === 'viewer' ? 'viewer' : 'streamer';
+  const peer = room.peers.get(req.params.peerId);
+  if (!peer) return res.status(404).json({ error: 'Peer not found' });
+  res.json(peer.offer || null);
+});
+
+// ══════════════════════════════════════════
+//  SDP answer per-peer (viewer → streamer)
+// ══════════════════════════════════════════
+app.post('/api/rtc/room/:roomId/peer/:peerId/answer', (req, res) => {
+  const room = signalingRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const peer = room.peers.get(req.params.peerId);
+  if (!peer) return res.status(404).json({ error: 'Peer not found' });
+  peer.answer = req.body;
+  res.json({ success: true });
+});
+
+app.get('/api/rtc/room/:roomId/peer/:peerId/answer', (req, res) => {
+  const room = signalingRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const peer = room.peers.get(req.params.peerId);
+  if (!peer) return res.status(404).json({ error: 'Peer not found' });
+  res.json(peer.answer || null);
+});
+
+// ══════════════════════════════════════════
+//  ICE candidates per-peer by role
+// ══════════════════════════════════════════
+app.post('/api/rtc/room/:roomId/peer/:peerId/candidate/:role', (req, res) => {
+  const room = signalingRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const peer = room.peers.get(req.params.peerId);
+  if (!peer) return res.status(404).json({ error: 'Peer not found' });
+  const key = req.params.role === 'viewer' ? 'viewerCandidates' : 'streamerCandidates';
+  peer[key].push(req.body);
+  res.json({ success: true });
+});
+
+app.get('/api/rtc/room/:roomId/peer/:peerId/candidates/:role', (req, res) => {
+  const room = signalingRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const peer = room.peers.get(req.params.peerId);
+  if (!peer) return res.status(404).json({ error: 'Peer not found' });
+  const key = req.params.role === 'viewer' ? 'viewerCandidates' : 'streamerCandidates';
   const since = parseInt(req.query.since) || 0;
-  res.json(room.candidates[role].slice(since));
+  res.json(peer[key].slice(since));
 });
 
 // Close room
 app.post('/api/rtc/room/:roomId/close', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (room) room.active = false;
+  res.json({ success: true });
+});
+
+// Leave peer (viewer disconnected)
+app.post('/api/rtc/room/:roomId/peer/:peerId/leave', (req, res) => {
+  const room = signalingRooms.get(req.params.roomId);
+  if (!room) return res.json({ success: true });
+  room.peers.delete(req.params.peerId);
   res.json({ success: true });
 });
 
@@ -129,7 +198,7 @@ app.post('/api/export', (req, res) => {
   res.json({ success: true, watermark: !isPro, resolution: resolution || '720p', format: 'mp4' });
 });
 
-// Cleanup
+// Cleanup (rooms older than 1h)
 setInterval(() => {
   const now = Date.now();
   signalingRooms.forEach((room, key) => {
@@ -148,9 +217,10 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n  ╔══════════════════════════════════════╗`);
-  console.log(`  ║  🎮 КиберОблик v2.0                 ║`);
+  console.log(`  ║  🎮 КиберОблик v2.1                 ║`);
   console.log(`  ║  http://localhost:${PORT}              ║`);
   console.log(`  ║  Viewer: /watch/<roomId>             ║`);
+  console.log(`  ║  Multi-viewer: ON                    ║`);
   console.log(`  ╚══════════════════════════════════════╝\n`);
 });
 

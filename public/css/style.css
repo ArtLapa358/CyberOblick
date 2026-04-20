@@ -87,9 +87,11 @@ html, body {
   font-family: var(--font-display); font-size: 13px; font-weight: 700;
   letter-spacing: 3px; text-transform: uppercase; color: var(--text-secondary);
 }
-.topbar__actions { display: flex; align-items: center; gap: 8px; }
+.topbar__actions { display: flex; align-items: center; gap: 6px; }
 .topbar__btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px; }
-.topbar__btn--icon svg { width: 22px; height: 22px; }
+.topbar__btn--icon svg { width: 20px; height: 20px; }
+.topbar__btn:hover { color: var(--accent); }
+.topbar__btn:active { transform: scale(0.92); }
 
 .tier-badge {
   font-family: var(--font-display); font-size: 10px; font-weight: 700;
@@ -346,6 +348,49 @@ html, body {
 .modal__close { background: none; border: none; color: var(--text-muted); font-size: 28px; cursor: pointer; }
 .modal__body { display: flex; flex-direction: column; gap: 16px; }
 
+/* ── Help Modal ── */
+.modal--help { max-height: 85vh; }
+.modal__body--help {
+  max-height: calc(85vh - 80px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.help-section {
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 10px;
+  margin-bottom: 10px;
+}
+.help-section__title {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-display);
+  font-size: 12px; font-weight: 700;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.help-section__icon { font-size: 18px; }
+.help-section p {
+  font-size: 13px; line-height: 1.55;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.help-section p:last-child { margin-bottom: 0; }
+.help-section strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+.help-section code {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0,240,255,0.12);
+  color: var(--accent);
+  border: 1px solid rgba(0,240,255,0.2);
+}
+
 /* ── Recording Indicator ── */
 .rec-indicator {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
@@ -391,4 +436,38 @@ html, body {
   .btn { padding: 12px 16px; font-size: 13px; }
   .btn--lg { padding: 12px; }
   .text-input, .select-input { font-size: 13px; }
+}
+
+/* ── Audio Level Indicator ── */
+.audio-level {
+  position: absolute;
+  top: 60px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 4px 8px;
+  border-radius: 20px;
+  z-index: 100;
+}
+
+.audio-level__bar {
+  width: 40px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.audio-level__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.1s ease;
+  width: 0%;
+}
+
+.audio-level__icon {
+  font-size: 14px;
 }

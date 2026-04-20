@@ -26,6 +26,13 @@ class MocapEngine {
     this.onFpsUpdate = null;
     this.onTrackingStatus = null;
 
+    // Audio
+    this.audioTrack = null;
+    this.audioContext = null;
+    this.analyser = null;
+    this.audioLevel = 0;
+    this.onAudioLevelUpdate = null;
+
     // Smoothing
     this._faceSmoothBuffer = [];
     this._smoothFrames = 3;
@@ -53,13 +60,28 @@ class MocapEngine {
     if (this.isRunning) return;
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
-      audio: false
+      audio: true
     });
     this.video.srcObject = stream;
     await this.video.play();
+
+    // Extract audio track
+    this.audioTrack = stream.getAudioTracks()[0];
+    if (this.audioTrack) {
+      this.audioContext = new AudioContext();
+      const source = this.audioContext.createMediaStreamSource(new MediaStream([this.audioTrack]));
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      source.connect(this.analyser);
+    }
+
     this.isRunning = true;
     this._trackingLoop();
-    console.log('[Mocap] Camera started');
+    console.log('[Mocap] Camera and audio started');
+  }
+
+  getAudioTrack() {
+    return this.audioTrack;
   }
 
   stop() {
@@ -69,6 +91,11 @@ class MocapEngine {
       this.video.srcObject = null;
     }
     this.faceLandmarks = null;
+    this.audioTrack = null;
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
   }
 
   async _trackingLoop() {
@@ -81,6 +108,16 @@ class MocapEngine {
       this.frameCount = 0;
       this.lastFpsTime = now;
       if (this.onFpsUpdate) this.onFpsUpdate(this.currentFps);
+    }
+
+    // Update audio level
+    if (this.analyser) {
+      const bufferLength = this.analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      this.analyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+      this.audioLevel = average / 255; // Normalize to 0-1
+      if (this.onAudioLevelUpdate) this.onAudioLevelUpdate(this.audioLevel);
     }
 
     try {

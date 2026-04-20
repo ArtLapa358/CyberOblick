@@ -1,9 +1,10 @@
 /**
- * КиберОблик v2.0 — 3D Avatar Renderer (avatar3d.js)
- * Three.js scene with proper IK arms, torso tracking, leg sway
+ * КиберОблик v2.2 — 3D Avatar Renderer (avatar3d.js)
+ * Original avatar geometry restored. Composite canvas for baking watermark.
  *
- * KEY FIX: Arms now use proper shoulder-pivot IK.
- * Uses face/body pose data for natural head and torso movement.
+ * CRITICAL FIX (streaming):
+ *   - Composite canvas/stream is created ONCE per streaming session and
+ *     REUSED for every viewer. Never recreated during a session.
  */
 
 class Avatar3D {
@@ -22,7 +23,14 @@ class Avatar3D {
     this.lights = [];
     this._hasExternalInput = false;
 
-    // Rest poses for arms (when no hand tracking)
+    // Watermark / compositing
+    this._watermarkEnabled = true;
+    this._compositeCanvas = null;
+    this._compositeCtx = null;
+    this._compositeStream = null;
+    this._compositeLoopRunning = false;
+    this._compositeFps = 30;
+
     this._restPose = {
       leftArm: { x: 0, z: 0.15 },
       rightArm: { x: 0, z: -0.15 }
@@ -35,7 +43,8 @@ class Avatar3D {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas, alpha: true, antialias: true,
-      powerPreference: 'high-performance'
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: true
     });
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -81,7 +90,7 @@ class Avatar3D {
   }
 
   // ══════════════════════════════════════════
-  //  Procedural Avatar — full body with proper pivots
+  //  Procedural Avatar — ORIGINAL geometry
   // ══════════════════════════════════════════
 
   _createAvatar() {
@@ -95,39 +104,40 @@ class Avatar3D {
     const eyeMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00f0ff, emissiveIntensity: 0.5 });
     const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1a28, roughness: 0.5, metalness: 0.3 });
 
-    // ═══ HIP ROOT (everything pivots from here) ═══
     const hipRoot = new THREE.Group();
     hipRoot.position.set(0, 0.85, 0);
     this.bones.hipRoot = hipRoot;
 
-    // ── Torso (child of hip) ──
     const torsoGroup = new THREE.Group();
-    torsoGroup.position.set(0, 0.3, 0); // relative to hip
+    torsoGroup.position.set(0, 0.3, 0);
     this.bones.torso = torsoGroup;
 
-    const torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.5, 0.2), bodyMat);
+    const torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.55, 0.24, 4, 4, 4), bodyMat);
     torsoGroup.add(torsoMesh);
 
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.04, 0.21), accentMat);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.04, 0.21, 4, 1, 2), accentMat);
     stripe.position.y = 0.1;
     torsoGroup.add(stripe);
 
-    // ── Neck ──
+    const chestPanel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.08, 4, 4, 2), new THREE.MeshStandardMaterial({
+      color: 0x000000, roughness: 0.25, metalness: 0.75, emissive: pc, emissiveIntensity: 0.06
+    }));
+    chestPanel.position.set(0, 0.05, 0.12);
+    torsoGroup.add(chestPanel);
+
     const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.1, 12), skinMat);
     neck.position.set(0, 0.3, 0);
     this.bones.neck = neck;
     torsoGroup.add(neck);
 
-    // ── Head (child of torso) ──
     const headGroup = new THREE.Group();
     headGroup.position.set(0, 0.42, 0);
     this.bones.head = headGroup;
 
-    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.15, 24, 24), skinMat);
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.15, 32, 32), skinMat);
     skull.scale.set(1, 1.1, 1);
     headGroup.add(skull);
 
-    // Eyes
     const eyeGeo = new THREE.SphereGeometry(0.025, 12, 12);
     const lEye = new THREE.Mesh(eyeGeo, eyeMat.clone());
     lEye.position.set(-0.05, 0.02, 0.13);
@@ -139,13 +149,11 @@ class Avatar3D {
     this.bones.rightEye = rEye;
     headGroup.add(rEye);
 
-    // Mouth
     const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.005, 0.02), darkMat);
     mouth.position.set(0, -0.06, 0.13);
     this.bones.mouth = mouth;
     headGroup.add(mouth);
 
-    // Brows
     const browGeo = new THREE.BoxGeometry(0.04, 0.008, 0.01);
     const lBrow = new THREE.Mesh(browGeo, darkMat);
     lBrow.position.set(-0.05, 0.07, 0.14);
@@ -158,36 +166,24 @@ class Avatar3D {
 
     torsoGroup.add(headGroup);
 
-    // ═══ ARMS — proper shoulder pivot IK ═══
-    // Arms are Groups at shoulder position. The upper arm mesh hangs DOWN from origin.
-    // When we rotate the group, the arm swings naturally from the shoulder.
-
     // LEFT ARM
     const leftShoulderPivot = new THREE.Group();
-    leftShoulderPivot.position.set(-0.2, 0.2, 0); // shoulder pos relative to torso
+    leftShoulderPivot.position.set(-0.2, 0.2, 0);
     this.bones.leftShoulder = leftShoulderPivot;
 
-    const leftUpperArm = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.03, 0.035, 0.3, 8), bodyMat
-    );
-    leftUpperArm.position.y = -0.15; // hanging down from pivot
+    const leftUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.3, 12), bodyMat);
+    leftUpperArm.position.y = -0.15;
     leftShoulderPivot.add(leftUpperArm);
 
-    // Left elbow pivot
     const leftElbowPivot = new THREE.Group();
     leftElbowPivot.position.set(0, -0.3, 0);
     this.bones.leftElbow = leftElbowPivot;
 
-    const leftForearm = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.025, 0.03, 0.25, 8), bodyMat
-    );
+    const leftForearm = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.25, 12), bodyMat);
     leftForearm.position.y = -0.125;
     leftElbowPivot.add(leftForearm);
 
-    // Left hand
-    const leftHand = new THREE.Mesh(
-      new THREE.SphereGeometry(0.035, 8, 8), skinMat
-    );
+    const leftHand = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), skinMat);
     leftHand.position.set(0, -0.27, 0);
     leftHand.scale.set(1, 0.6, 0.8);
     this.bones.leftHand = leftHand;
@@ -196,14 +192,12 @@ class Avatar3D {
     leftShoulderPivot.add(leftElbowPivot);
     torsoGroup.add(leftShoulderPivot);
 
-    // RIGHT ARM (mirror)
+    // RIGHT ARM
     const rightShoulderPivot = new THREE.Group();
     rightShoulderPivot.position.set(0.2, 0.2, 0);
     this.bones.rightShoulder = rightShoulderPivot;
 
-    const rightUpperArm = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.03, 0.035, 0.3, 8), bodyMat
-    );
+    const rightUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.3, 12), bodyMat);
     rightUpperArm.position.y = -0.15;
     rightShoulderPivot.add(rightUpperArm);
 
@@ -211,15 +205,11 @@ class Avatar3D {
     rightElbowPivot.position.set(0, -0.3, 0);
     this.bones.rightElbow = rightElbowPivot;
 
-    const rightForearm = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.025, 0.03, 0.25, 8), bodyMat
-    );
+    const rightForearm = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.25, 12), bodyMat);
     rightForearm.position.y = -0.125;
     rightElbowPivot.add(rightForearm);
 
-    const rightHand = new THREE.Mesh(
-      new THREE.SphereGeometry(0.035, 8, 8), skinMat
-    );
+    const rightHand = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), skinMat);
     rightHand.position.set(0, -0.27, 0);
     rightHand.scale.set(1, 0.6, 0.8);
     this.bones.rightHand = rightHand;
@@ -230,62 +220,44 @@ class Avatar3D {
 
     hipRoot.add(torsoGroup);
 
-    // ═══ LEGS (children of hip) ═══
-    const legGeo = new THREE.CylinderGeometry(0.04, 0.035, 0.4, 8);
-
-    // Left leg pivot
+    // LEGS
     const leftLegPivot = new THREE.Group();
     leftLegPivot.position.set(-0.08, -0.05, 0);
     this.bones.leftLeg = leftLegPivot;
-
-    const leftLegMesh = new THREE.Mesh(legGeo, darkMat);
+    const leftLegMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.035, 0.4, 12), darkMat);
     leftLegMesh.position.y = -0.2;
     leftLegPivot.add(leftLegMesh);
 
-    // Left shin
     const leftShinPivot = new THREE.Group();
     leftShinPivot.position.set(0, -0.4, 0);
     this.bones.leftShin = leftShinPivot;
-
-    const leftShin = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.035, 0.03, 0.38, 8), darkMat
-    );
+    const leftShin = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.38, 8), darkMat);
     leftShin.position.y = -0.19;
     leftShinPivot.add(leftShin);
-
-    // Left foot
     const leftFoot = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.1), accentMat);
     leftFoot.position.set(0, -0.4, 0.02);
     this.bones.leftFoot = leftFoot;
     leftShinPivot.add(leftFoot);
-
     leftLegPivot.add(leftShinPivot);
     hipRoot.add(leftLegPivot);
 
-    // Right leg (mirror)
     const rightLegPivot = new THREE.Group();
     rightLegPivot.position.set(0.08, -0.05, 0);
     this.bones.rightLeg = rightLegPivot;
-
-    const rightLegMesh = new THREE.Mesh(legGeo, darkMat);
+    const rightLegMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.035, 0.4, 12), darkMat);
     rightLegMesh.position.y = -0.2;
     rightLegPivot.add(rightLegMesh);
 
     const rightShinPivot = new THREE.Group();
     rightShinPivot.position.set(0, -0.4, 0);
     this.bones.rightShin = rightShinPivot;
-
-    const rightShin = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.035, 0.03, 0.38, 8), darkMat
-    );
+    const rightShin = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.38, 8), darkMat);
     rightShin.position.y = -0.19;
     rightShinPivot.add(rightShin);
-
     const rightFoot = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.1), accentMat);
     rightFoot.position.set(0, -0.4, 0.02);
     this.bones.rightFoot = rightFoot;
     rightShinPivot.add(rightFoot);
-
     rightLegPivot.add(rightShinPivot);
     hipRoot.add(rightLegPivot);
 
@@ -294,7 +266,7 @@ class Avatar3D {
   }
 
   // ══════════════════════════════════════════
-  //  Bone Updates — Face + Body
+  //  Bone Updates — ORIGINAL
   // ══════════════════════════════════════════
 
   updateFace(faceData, options = { head: true, body: true }) {
@@ -357,10 +329,8 @@ class Avatar3D {
     }
   }
 
-
-
   // ══════════════════════════════════════════
-  //  Equipment
+  //  Equipment — ORIGINAL
   // ══════════════════════════════════════════
 
   toggleEquipment(equipId) {
@@ -442,10 +412,6 @@ class Avatar3D {
     delete this.equipMeshes[equipId];
   }
 
-  // ══════════════════════════════════════════
-  //  Customization
-  // ══════════════════════════════════════════
-
   setTeamColors(primary, accent) {
     this.teamColors.primary = primary;
     this.teamColors.accent = accent;
@@ -459,30 +425,141 @@ class Avatar3D {
     }
   }
 
-  getCanvasStream(fps = 30) { return this.canvas.captureStream(fps); }
+  // ══════════════════════════════════════════
+  //  Composite canvas (watermark bake)
+  //
+  //  getCanvasStream() is IDEMPOTENT — returns the same MediaStream instance
+  //  on repeated calls within a session. This is critical so every viewer's
+  //  RTCPeerConnection can attach the same track.
+  // ══════════════════════════════════════════
+
+  setWatermarkEnabled(enabled) {
+    this._watermarkEnabled = !!enabled;
+  }
+
+  _drawWatermark(ctx, w, h) {
+    if (!this._watermarkEnabled) return;
+    const scale = Math.min(w, h) / 720;
+
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.font = `900 ${28 * scale}px "Orbitron", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const x = w / 2;
+    const y = h - 40 * scale;
+
+    ctx.shadowColor = 'rgba(0,240,255,0.5)';
+    ctx.shadowBlur = 12 * scale;
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText('КИБЕРОБЛИК', x, y);
+
+    ctx.shadowBlur = 0;
+    ctx.font = `700 ${11 * scale}px "Orbitron", sans-serif`;
+    ctx.fillStyle = 'rgba(0,240,255,0.85)';
+    ctx.fillText('FREE', x, y + 22 * scale);
+    ctx.restore();
+  }
+
+  _renderComposite() {
+    if (!this._compositeCanvas || !this.canvas) return;
+    const ctx = this._compositeCtx;
+    const w = this._compositeCanvas.width;
+    const h = this._compositeCanvas.height;
+
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, w, h);
+
+    const srcW = this.canvas.width;
+    const srcH = this.canvas.height;
+    if (srcW > 0 && srcH > 0) {
+      const srcAspect = srcW / srcH;
+      const dstAspect = w / h;
+      let drawW, drawH, drawX, drawY;
+      if (srcAspect > dstAspect) {
+        drawW = w; drawH = w / srcAspect;
+        drawX = 0; drawY = (h - drawH) / 2;
+      } else {
+        drawH = h; drawW = h * srcAspect;
+        drawY = 0; drawX = (w - drawW) / 2;
+      }
+      try {
+        ctx.drawImage(this.canvas, drawX, drawY, drawW, drawH);
+      } catch (e) {}
+    }
+
+    this._drawWatermark(ctx, w, h);
+  }
+
+  _startCompositeLoop() {
+    if (this._compositeLoopRunning) return;
+    this._compositeLoopRunning = true;
+    const frameMs = 1000 / this._compositeFps;
+    let last = 0;
+    const loop = (now) => {
+      if (!this._compositeLoopRunning) return;
+      if (now - last >= frameMs) {
+        this._renderComposite();
+        last = now;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
+  getCanvasStream(fps = 30, width = null, height = null) {
+    const w = width || 1280;
+    const h = height || 720;
+
+    if (!this._compositeCanvas) {
+      this._compositeCanvas = document.createElement('canvas');
+      this._compositeCanvas.width = w;
+      this._compositeCanvas.height = h;
+      this._compositeCtx = this._compositeCanvas.getContext('2d');
+      this._compositeFps = fps;
+    }
+    this._startCompositeLoop();
+
+    if (!this._compositeStream) {
+      this._compositeStream = this._compositeCanvas.captureStream(fps);
+    }
+    return this._compositeStream;
+  }
+
+  stopCanvasStream() {
+    this._compositeLoopRunning = false;
+    if (this._compositeStream) {
+      try { this._compositeStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+      this._compositeStream = null;
+    }
+    this._compositeCanvas = null;
+    this._compositeCtx = null;
+  }
 
   captureFrame(w, h) {
     const pw = this.renderer.domElement.width, ph = this.renderer.domElement.height;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
     this.renderer.render(this.scene, this.camera);
-    const url = this.renderer.domElement.toDataURL('image/png');
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    const tctx = tmp.getContext('2d');
+    tctx.fillStyle = '#0a0a0f';
+    tctx.fillRect(0, 0, w, h);
+    try { tctx.drawImage(this.canvas, 0, 0, w, h); } catch (e) {}
+    this._drawWatermark(tctx, w, h);
+    const url = tmp.toDataURL('image/png');
     this.renderer.setSize(pw, ph);
     this.camera.aspect = pw / ph; this.camera.updateProjectionMatrix();
     return url;
   }
 
-  // ══════════════════════════════════════════
-  //  Render Loop
-  // ══════════════════════════════════════════
-
   _animate() {
     requestAnimationFrame(() => this._animate());
     const time = this.clock.getElapsedTime();
 
-    // Idle animations when no mocap
     if (this.bones.torso) {
-      // Breathing
       const breathOffset = Math.sin(time * 2) * 0.003;
       if (!this._hasExternalInput) {
         this.bones.torso.position.y = 0.3 + breathOffset;
@@ -493,7 +570,6 @@ class Avatar3D {
       this.bones.head.rotation.x = Math.sin(time * 0.7) * 0.02;
     }
 
-    // Idle arm sway when no hand tracking
     if (!this._hasExternalInput) {
       if (this.bones.leftShoulder) {
         this.bones.leftShoulder.rotation.x = Math.sin(time * 0.8) * 0.03;
@@ -503,7 +579,6 @@ class Avatar3D {
       }
     }
 
-    // Wing flap
     if (this.equipMeshes['wings-holo']) {
       const w = this.equipMeshes['wings-holo'];
       w.children[0].rotation.y = 0.5 + Math.sin(time * 3) * 0.15;

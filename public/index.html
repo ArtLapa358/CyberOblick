@@ -31,9 +31,18 @@
       </div>
       <div class="topbar__actions">
         <button class="topbar__btn" id="btn-tier"><span class="tier-badge free">FREE</span></button>
-        <button class="topbar__btn topbar__btn--icon" id="btn-settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+        <button class="topbar__btn topbar__btn--icon" id="btn-help" title="Помощь">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+        </button>
+        <button class="topbar__btn topbar__btn--icon" id="btn-settings" title="Настройки">
+          <!-- Gear icon -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
           </svg>
         </button>
       </div>
@@ -43,7 +52,7 @@
     <main class="viewport" id="viewport">
       <canvas id="three-canvas"></canvas>
 
-      <!-- Camera PiP — draggable + resizable -->
+      <!-- Camera PiP -->
       <div class="cam-pip" id="cam-pip">
         <video id="cam-video" autoplay playsinline muted></video>
         <div class="cam-pip__label">CAM</div>
@@ -61,7 +70,7 @@
         </div>
       </div>
 
-      <!-- Watermark -->
+      <!-- Watermark (preview overlay; real watermark baked into stream/record by renderer) -->
       <div class="watermark" id="watermark">
         <span>КиберОблик</span><span class="watermark__sub">FREE</span>
       </div>
@@ -156,10 +165,28 @@
           </button>
         </div>
         <div class="panel-row">
+          <label class="slider-group" style="width:100%;">
+            <span class="slider-group__label">Качество записи</span>
+            <select id="record-quality" class="select-input">
+              <option value="720p">720p (Free)</option>
+              <option value="1080p">1080p (Pro)</option>
+            </select>
+          </label>
+        </div>
+        <div class="panel-row">
           <button class="btn btn--outline btn--lg" id="btn-stream">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             Стрим (WebRTC)
           </button>
+        </div>
+        <div class="panel-row">
+          <label class="slider-group" style="width:100%;">
+            <span class="slider-group__label">Качество стрима</span>
+            <select id="stream-quality" class="select-input">
+              <option value="720p">720p (Free)</option>
+              <option value="1080p">1080p (Pro)</option>
+            </select>
+          </label>
         </div>
         <div class="panel-row">
           <label class="slider-group" style="width:100%;">
@@ -198,6 +225,76 @@
             </select>
           </label>
           <button class="btn btn--primary" id="btn-save-avatar">Сохранить Облик</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div class="modal-overlay hidden" id="modal-help">
+      <div class="modal modal--help">
+        <div class="modal__header">
+          <h2>Как это работает</h2>
+          <button class="modal__close" id="btn-close-help">&times;</button>
+        </div>
+        <div class="modal__body modal__body--help">
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">🎥</span>
+              <span>Захват движений</span>
+            </div>
+            <p>Нажмите <strong>«Запустить камеру»</strong> во вкладке <strong>«Захват»</strong>. Приложение попросит доступ к фронтальной камере. Смотрите в камеру — ваше лицо, мимика (моргание, улыбка, открытый рот) и наклон головы будут передаваться на 3D-аватар в реальном времени.</p>
+            <p>Переключатели <strong>«Лицо»</strong> и <strong>«Тело»</strong> включают/выключают отдельные части трекинга. Ползунок <strong>«Чувствительность»</strong> регулирует, насколько сильно аватар реагирует на движения.</p>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">🎨</span>
+              <span>Стиль и снаряжение</span>
+            </div>
+            <p>Во вкладке <strong>«Стиль»</strong> можно надеть на аватар кибер-шлем, голо-визор, неон-маску, уши, тех-куртку или голо-крылья. Нажмите на карточку, чтобы включить или снять предмет.</p>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">⚡</span>
+              <span>Команда и цвета</span>
+            </div>
+            <p>Во вкладке <strong>«Команда»</strong> выберите пресет (Natus Vincere, Spirit, Virtus.pro и др.) или настройте свои цвета — основной и акцентный. Цвета применятся и к аватару, и к интерфейсу.</p>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">💾</span>
+              <span>Запись видео</span>
+            </div>
+            <p>Во вкладке <strong>«Экспорт»</strong> нажмите <strong>«Запись (WEBM)»</strong> — вы запишете видео аватара со сцены. После остановки файл автоматически скачается.</p>
+            <p>В бесплатной версии — 720p с водяным знаком. В Pro-режиме (демо-режим в настройках) — до 1080p без водяного знака.</p>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">📡</span>
+              <span>Стрим для зрителей</span>
+            </div>
+            <p>Нажмите <strong>«Стрим (WebRTC)»</strong> — создастся комната с уникальным ID. Скопируйте ссылку для зрителя из появившейся панели. Один стрим может смотреть сразу <strong>несколько зрителей</strong>.</p>
+            <p>Чтобы подключиться к чужому стриму — введите ID в поле <strong>«ID комнаты»</strong> и нажмите <strong>«Подключиться»</strong>, либо откройте прямую ссылку вида <code>/watch/XXXXXX</code>.</p>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">🎚️</span>
+              <span>Настройки</span>
+            </div>
+            <p>В меню <strong>«Настройки»</strong> (значок шестерёнки сверху) можно переключить Pro-режим (демо), изменить качество рендеринга и сохранить текущую конфигурацию облика.</p>
+          </div>
+
+          <div class="help-section">
+            <div class="help-section__title">
+              <span class="help-section__icon">📷</span>
+              <span>Мини-окно камеры</span>
+            </div>
+            <p>Окно <strong>«CAM»</strong> можно перетаскивать пальцем и растягивать за правый нижний угол. Счётчик FPS показывает производительность трекинга.</p>
+          </div>
         </div>
       </div>
     </div>

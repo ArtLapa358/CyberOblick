@@ -1,11 +1,3 @@
-/**
- * КиберОблик v2.0 — Main App Controller (app.js)
- * - WebM recording (canvas capture → download)
- * - Resizable/draggable camera PiP
- * - WebRTC stream with viewer link + proper close
- * - Full body tracking wiring
- */
-
 (function () {
   'use strict';
 
@@ -17,8 +9,15 @@
     mediaRecorder: null,
     recordedChunks: [],
     selectedTeam: null,
+
+    // Streaming (multi-viewer)
     streamRoomId: null,
-    streamPC: null
+    streamStream: null,                 // MediaStream from avatar composite canvas
+    streamerPeers: new Map(),           // peerId -> { pc, iceIndex, candidatePollTimer, connected }
+    streamerPollTimer: null,            // polls for new pending viewers
+
+    recordQuality: '720p',
+    streamQuality: '720p'
   };
 
   let mocap = null;
@@ -29,7 +28,7 @@
   // ══════════════════════════════════════════
 
   async function init() {
-    console.log('[App] КиберОблик v2.0 starting...');
+    console.log('[App] КиберОблик v2.1 starting...');
     const loaderStatus = document.querySelector('.loader__status');
 
     loaderStatus.textContent = 'Загрузка 3D движка...';
@@ -43,14 +42,14 @@
     await mocap.init(document.getElementById('cam-video'));
     await sleep(300);
 
-    // ── Connect mocap → avatar (face + body) ──
     mocap.onFaceDetected = (faceData) => {
       avatar._hasExternalInput = mocap.trackFace || mocap.trackBody;
       avatar.updateFace(faceData, { head: mocap.trackFace, body: mocap.trackBody });
     };
 
     mocap.onFpsUpdate = (fps) => {
-      document.getElementById('fps-counter').textContent = `${fps} FPS`;
+      const el = document.getElementById('fps-counter');
+      if (el) el.textContent = `${fps} FPS`;
     };
 
     mocap.onTrackingStatus = (type, active) => {
@@ -58,11 +57,18 @@
       if (el) el.classList.toggle('active', active);
     };
 
+    mocap.onAudioLevelUpdate = (level) => {
+      updateAudioLevelIndicator(level);
+    };
+
     loaderStatus.textContent = 'Настройка интерфейса...';
     setupUI();
     setupResizablePiP();
     await loadTeams();
     await sleep(200);
+
+    // Initial watermark sync
+    avatar.setWatermarkEnabled(!state.isPro);
 
     const loader = document.getElementById('loader');
     loader.classList.add('fade-out');
@@ -125,6 +131,16 @@
       if (e.key === 'Enter') joinRoom();
     });
 
+    document.getElementById('record-quality').addEventListener('change', (e) => {
+      state.recordQuality = e.target.value;
+      updateQualitySelectors();
+    });
+    document.getElementById('stream-quality').addEventListener('change', (e) => {
+      state.streamQuality = e.target.value;
+      updateQualitySelectors();
+    });
+
+    // Settings modal
     document.getElementById('btn-settings').addEventListener('click', () => {
       document.getElementById('modal-settings').classList.remove('hidden');
     });
@@ -135,6 +151,17 @@
       if (e.target.classList.contains('modal-overlay'))
         document.getElementById('modal-settings').classList.add('hidden');
     });
+
+    // Help modal
+    const btnHelp = document.getElementById('btn-help');
+    const modalHelp = document.getElementById('modal-help');
+    if (btnHelp && modalHelp) {
+      btnHelp.addEventListener('click', () => modalHelp.classList.remove('hidden'));
+      document.getElementById('btn-close-help').addEventListener('click', () => modalHelp.classList.add('hidden'));
+      modalHelp.addEventListener('click', (e) => {
+        if (e.target.classList.contains('modal-overlay')) modalHelp.classList.add('hidden');
+      });
+    }
 
     document.getElementById('toggle-pro').addEventListener('change', (e) => {
       state.isPro = e.target.checked;
@@ -147,6 +174,37 @@
     });
 
     document.getElementById('btn-save-avatar').addEventListener('click', saveAvatar);
+
+    document.getElementById('record-quality').value = state.recordQuality;
+    document.getElementById('stream-quality').value = state.streamQuality;
+
+    updateQualitySelectors();
+  }
+
+  function updateQualitySelectors() {
+    const recordSelect = document.getElementById('record-quality');
+    const streamSelect = document.getElementById('stream-quality');
+    const options = recordSelect.querySelectorAll('option');
+
+    options.forEach(option => {
+      if (option.value === '1080p') {
+        option.disabled = !state.isPro;
+        if (!state.isPro && (state.recordQuality === '1080p' || state.streamQuality === '1080p')) {
+          state.recordQuality = '720p';
+          state.streamQuality = '720p';
+          recordSelect.value = '720p';
+          streamSelect.value = '720p';
+        }
+      }
+    });
+  }
+
+  function getResolution(quality) {
+    return quality === '1080p' ? { width: 1920, height: 1080 } : { width: 1280, height: 720 };
+  }
+
+  function getBitrate(quality) {
+    return quality === '1080p' ? 5000000 : 2500000;
   }
 
   // ══════════════════════════════════════════
@@ -159,9 +217,8 @@
     let isDragging = false, isResizing = false;
     let startX, startY, startW, startH, startLeft, startTop;
 
-    // ── Drag ──
     pip.addEventListener('pointerdown', (e) => {
-      if (e.target === handle) return; // let resize handle it
+      if (e.target === handle) return;
       isDragging = true;
       startX = e.clientX;
       startY = e.clientY;
@@ -188,7 +245,6 @@
       pip.style.transition = '';
     });
 
-    // ── Resize handle ──
     handle.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       isResizing = true;
@@ -215,12 +271,9 @@
       pip.style.transition = '';
     });
 
-    // ── Pinch to zoom (touch) ──
     let lastTouchDist = 0;
     pip.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2) {
-        lastTouchDist = getTouchDist(e.touches);
-      }
+      if (e.touches.length === 2) lastTouchDist = getTouchDist(e.touches);
     }, { passive: true });
 
     pip.addEventListener('touchmove', (e) => {
@@ -242,6 +295,24 @@
     return Math.sqrt(dx * dx + dy * dy);
   }
 
+  function updateAudioLevelIndicator(level) {
+    let el = document.getElementById('audio-level');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'audio-level';
+      el.className = 'audio-level';
+      el.innerHTML = `
+        <div class="audio-level__bar">
+          <div class="audio-level__fill"></div>
+        </div>
+        <span class="audio-level__icon">🎤</span>
+      `;
+      document.getElementById('viewport').appendChild(el);
+    }
+    const fill = el.querySelector('.audio-level__fill');
+    fill.style.width = (level * 100) + '%';
+  }
+
   // ══════════════════════════════════════════
   //  Camera
   // ══════════════════════════════════════════
@@ -258,6 +329,9 @@
       avatar._hasExternalInput = false;
       document.getElementById('track-face').classList.remove('active');
       document.getElementById('track-body').classList.remove('active');
+      // Hide audio level indicator
+      const audioEl = document.getElementById('audio-level');
+      if (audioEl) audioEl.remove();
     } else {
       try {
         btn.innerHTML = 'Подключение...'; btn.disabled = true;
@@ -277,28 +351,16 @@
   }
 
   // ══════════════════════════════════════════
-  //  WebRTC Streaming (with viewer support)
+  //  WebRTC Streaming (multi-viewer)
   // ══════════════════════════════════════════
 
   async function toggleStreaming() {
     const btn = document.getElementById('btn-stream');
 
     if (state.isStreaming) {
-      // ── Stop stream ──
-      if (state.streamPC) {
-        state.streamPC.close();
-        state.streamPC = null;
-      }
-      if (state.streamRoomId) {
-        await fetch(`/api/rtc/room/${state.streamRoomId}/close`, { method: 'POST' });
-      }
-      state.isStreaming = false;
-      state.streamRoomId = null;
+      await stopStreaming();
       btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> Стрим (WebRTC)`;
       showToast('Стрим остановлен', 'info');
-
-      const info = document.getElementById('stream-info');
-      if (info) info.remove();
       return;
     }
 
@@ -307,33 +369,20 @@
       const { roomId } = await res.json();
       state.streamRoomId = roomId;
 
-      const canvasStream = avatar.getCanvasStream(30);
+      // Single composited MediaStream — created ONCE and reused for every viewer.
+      const { width, height } = getResolution(state.streamQuality);
+      state.streamStream = avatar.getCanvasStream(30, width, height);
 
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
-      state.streamPC = pc;
+      // Add audio track if available
+      const audioTrack = mocap.getAudioTrack();
+      if (audioTrack) {
+        state.streamStream.addTrack(audioTrack);
+      }
 
-      canvasStream.getTracks().forEach(track => pc.addTrack(track, canvasStream));
-
-      pc.onicecandidate = async (event) => {
-        if (event.candidate) {
-          await fetch(`/api/rtc/room/${roomId}/candidate/streamer`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(event.candidate)
-          });
-        }
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      await fetch(`/api/rtc/room/${roomId}/offer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(offer)
-      });
+      // Warm up the composite canvas — give it ~200ms to generate real frames
+      // before peers start asking for offers. Otherwise the outgoing track can
+      // be "empty" at negotiation time, which some browsers handle badly.
+      await sleep(300);
 
       state.isStreaming = true;
       btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Остановить стрим`;
@@ -342,7 +391,7 @@
       showStreamInfo(roomId, watchUrl);
       showToast(`Стрим запущен! Комната: ${roomId}`, 'success');
 
-      pollForAnswer(roomId, pc);
+      startStreamerViewerPolling(roomId);
 
     } catch (err) {
       console.error('[Stream] Error:', err);
@@ -350,19 +399,231 @@
     }
   }
 
+  async function stopStreaming() {
+    // Stop polling
+    if (state.streamerPollTimer) {
+      clearInterval(state.streamerPollTimer);
+      state.streamerPollTimer = null;
+    }
+    // Close all peer connections
+    state.streamerPeers.forEach((peer) => {
+      if (peer.candidatePollTimer) clearInterval(peer.candidatePollTimer);
+      try { peer.pc.close(); } catch (e) {}
+    });
+    state.streamerPeers.clear();
+
+    if (state.streamRoomId) {
+      try {
+        await fetch(`/api/rtc/room/${state.streamRoomId}/close`, { method: 'POST' });
+      } catch (e) {}
+    }
+
+    // Stop composite loop inside avatar
+    avatar.stopCanvasStream();
+    state.streamStream = null;
+
+    state.isStreaming = false;
+    state.streamRoomId = null;
+
+    const info = document.getElementById('stream-info');
+    if (info) info.remove();
+    updateViewerCount(0);
+  }
+
+  function startStreamerViewerPolling(roomId) {
+    if (state.streamerPollTimer) clearInterval(state.streamerPollTimer);
+    state.streamerPollTimer = setInterval(async () => {
+      if (!state.isStreaming) return;
+      try {
+        const res = await fetch(`/api/rtc/room/${roomId}/pending-viewers`);
+        if (!res.ok) return;
+        const { peerIds } = await res.json();
+        if (peerIds && peerIds.length > 0) {
+          for (const peerId of peerIds) {
+            if (!state.streamerPeers.has(peerId)) {
+              console.log('[Stream] New viewer:', peerId);
+              createPeerForViewer(roomId, peerId);
+            }
+          }
+        }
+      } catch (e) {}
+    }, 400);
+  }
+
+  async function createPeerForViewer(roomId, peerId) {
+    try {
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ]
+      });
+
+      const peerState = {
+        pc,
+        iceIndex: 0,
+        candidatePollTimer: null,
+        connected: false,
+        remoteSet: false,
+        pendingIce: []
+      };
+      state.streamerPeers.set(peerId, peerState);
+
+      // Add all tracks from composite stream (video + audio).
+      if (state.streamStream) {
+        state.streamStream.getTracks().forEach(track => {
+          pc.addTrack(track, state.streamStream);
+        });
+      }
+
+      pc.onicecandidate = async (event) => {
+        if (event.candidate) {
+          try {
+            await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/candidate/streamer`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(event.candidate.toJSON ? event.candidate.toJSON() : event.candidate)
+            });
+          } catch (e) {}
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        console.log('[Stream] Peer', peerId, 'ICE:', pc.iceConnectionState);
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log('[Stream] Peer', peerId, 'state:', pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          if (!peerState.connected) {
+            peerState.connected = true;
+            updateViewerCount(getConnectedViewerCount());
+            showToast('Зритель подключился!', 'success');
+          }
+        } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          if (peerState.connected) {
+            peerState.connected = false;
+            updateViewerCount(getConnectedViewerCount());
+          }
+          if (peerState.candidatePollTimer) clearInterval(peerState.candidatePollTimer);
+          try { pc.close(); } catch (e) {}
+          state.streamerPeers.delete(peerId);
+        } else if (pc.connectionState === 'disconnected') {
+          // Viewer's page may be reloading — wait a bit; failed will fire if gone
+          if (peerState.connected) {
+            peerState.connected = false;
+            updateViewerCount(getConnectedViewerCount());
+          }
+        }
+      };
+
+      // Create and send offer
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false
+      });
+      await pc.setLocalDescription(offer);
+
+      await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/offer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(offer)
+      });
+      console.log('[Stream] Sent offer to', peerId);
+
+      // Poll for answer + viewer ICE candidates
+      let attempts = 0;
+      peerState.candidatePollTimer = setInterval(async () => {
+        attempts++;
+        if (!state.isStreaming || attempts > 240) {
+          clearInterval(peerState.candidatePollTimer);
+          return;
+        }
+        try {
+          // Fetch answer first if we haven't set it yet
+          if (!peerState.remoteSet) {
+            const ansRes = await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/answer`);
+            if (ansRes.ok) {
+              const answer = await ansRes.json();
+              if (answer && answer.type === 'answer') {
+                try {
+                  await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                  peerState.remoteSet = true;
+                  console.log('[Stream] Got answer from', peerId);
+                  // Flush queued candidates
+                  for (const c of peerState.pendingIce) {
+                    try { await pc.addIceCandidate(c); } catch (e) {}
+                  }
+                  peerState.pendingIce = [];
+                } catch (e) {
+                  console.error('[Stream] setRemoteDescription failed:', e);
+                }
+              }
+            }
+          }
+
+          // Fetch viewer's ICE candidates (can arrive even before answer in some flows)
+          const cRes = await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/candidates/viewer?since=${peerState.iceIndex}`);
+          if (cRes.ok) {
+            const candidates = await cRes.json();
+            for (const c of candidates) {
+              try {
+                const iceCandidate = new RTCIceCandidate(c);
+                if (peerState.remoteSet) {
+                  await pc.addIceCandidate(iceCandidate);
+                } else {
+                  peerState.pendingIce.push(iceCandidate);
+                }
+              } catch (e) {
+                console.warn('[Stream] ICE add failed for peer', peerId, e);
+              }
+              peerState.iceIndex++;
+            }
+          }
+        } catch (e) {}
+      }, 500);
+
+    } catch (err) {
+      console.error('[Stream] Peer setup error for', peerId, err);
+      state.streamerPeers.delete(peerId);
+    }
+  }
+
+  function getConnectedViewerCount() {
+    let n = 0;
+    state.streamerPeers.forEach(p => { if (p.connected) n++; });
+    return n;
+  }
+
+  function updateViewerCount(n) {
+    const el = document.getElementById('stream-viewer-count');
+    if (el) el.textContent = n;
+  }
+
   function toggleRecording() {
     state.isRecording ? stopRecording() : startRecording();
   }
 
   function startRecording() {
-    const canvasStream = avatar.getCanvasStream(30);
+    const { width, height } = getResolution(state.recordQuality);
+    // Use composite stream so watermark is baked in
+    const canvasStream = avatar.getCanvasStream(30, width, height);
+
+    // Add audio track if available
+    const audioTrack = mocap.getAudioTrack();
+    if (audioTrack) {
+      canvasStream.addTrack(audioTrack);
+    }
+
     state.recordedChunks = [];
 
-    const selectedMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-      ? 'video/webm;codecs=vp8,opus'
-      : MediaRecorder.isTypeSupported('video/webm')
-        ? 'video/webm'
-        : '';
+    const selectedMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+        ? 'video/webm;codecs=vp8,opus'
+        : MediaRecorder.isTypeSupported('video/webm')
+          ? 'video/webm'
+          : '';
 
     if (!selectedMime) {
       showToast('WebM не поддерживается в этом браузере', 'error');
@@ -371,7 +632,7 @@
 
     state.mediaRecorder = new MediaRecorder(canvasStream, {
       mimeType: selectedMime,
-      videoBitsPerSecond: 2500000
+      videoBitsPerSecond: getBitrate(state.recordQuality)
     });
 
     state.mediaRecorder.ondataavailable = (e) => {
@@ -382,6 +643,8 @@
       const webmBlob = new Blob(state.recordedChunks, { type: selectedMime });
       downloadBlob(webmBlob, `cyberoblik_${Date.now()}.webm`);
       showToast('Запись сохранена в WebM', 'success');
+      // Stop composite loop ONLY if we're not also streaming
+      if (!state.isStreaming) avatar.stopCanvasStream();
     };
 
     state.mediaRecorder.start(100);
@@ -437,7 +700,6 @@
   }
 
   function showStreamInfo(roomId, watchUrl) {
-    // Remove old info
     const old = document.getElementById('stream-info');
     if (old) old.remove();
 
@@ -450,7 +712,10 @@
       font-size: 11px; color: #e8e8f0; line-height: 1.6;
     `;
     info.innerHTML = `
-      <div style="font-family:'Orbitron',sans-serif;font-size:9px;color:#00ff88;letter-spacing:2px;margin-bottom:4px;">СТРИМ АКТИВЕН</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <div style="font-family:'Orbitron',sans-serif;font-size:9px;color:#00ff88;letter-spacing:2px;">СТРИМ АКТИВЕН</div>
+        <div style="font-size:10px;color:#8888a8;">Зрителей: <span id="stream-viewer-count" style="color:#00f0ff;font-weight:700;">0</span></div>
+      </div>
       <div>Комната: <strong style="color:#00f0ff;letter-spacing:1px;">${roomId}</strong></div>
       <div style="margin-top:4px;">Ссылка для зрителя:</div>
       <div style="display:flex;gap:8px;margin-top:4px;">
@@ -458,48 +723,28 @@
           flex:1;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);
           background:rgba(0,0,0,0.3);color:#00f0ff;font-size:10px;font-family:'Exo 2',sans-serif;
         " id="stream-url-input">
-        <button onclick="navigator.clipboard.writeText('${watchUrl}');this.textContent='✓'" style="
+        <button id="stream-copy-btn" style="
           padding:6px 12px;border-radius:6px;border:1px solid rgba(0,240,255,0.3);
           background:rgba(0,240,255,0.1);color:#00f0ff;cursor:pointer;font-size:11px;
         ">Копировать</button>
       </div>
     `;
     document.getElementById('viewport').appendChild(info);
-  }
 
-  async function pollForAnswer(roomId, pc) {
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      if (!state.isStreaming || ++attempts > 120) {
-        clearInterval(interval);
-        return;
-      }
+    document.getElementById('stream-copy-btn').addEventListener('click', () => {
       try {
-        const res = await fetch(`/api/rtc/room/${roomId}/answer`);
-        const answer = await res.json();
-        if (answer && !pc.remoteDescription) {
-          await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          showToast('Зритель подключился!', 'success');
-
-          // Now poll for viewer's ICE candidates
-          let cidx = 0;
-          const cInterval = setInterval(async () => {
-            if (!state.isStreaming) { clearInterval(cInterval); return; }
-            try {
-              const cRes = await fetch(`/api/rtc/room/${roomId}/candidates/viewer?since=${cidx}`);
-              const candidates = await cRes.json();
-              for (const c of candidates) {
-                await pc.addIceCandidate(new RTCIceCandidate(c));
-                cidx++;
-              }
-            } catch (e) {}
-            if (pc.connectionState === 'connected') clearInterval(cInterval);
-          }, 500);
-
-          clearInterval(interval);
-        }
-      } catch (e) {}
-    }, 500);
+        navigator.clipboard.writeText(watchUrl);
+        document.getElementById('stream-copy-btn').textContent = '✓';
+        setTimeout(() => {
+          const b = document.getElementById('stream-copy-btn');
+          if (b) b.textContent = 'Копировать';
+        }, 1500);
+      } catch (e) {
+        // Fallback
+        const inp = document.getElementById('stream-url-input');
+        inp.select(); document.execCommand('copy');
+      }
+    });
   }
 
   // ══════════════════════════════════════════
@@ -571,11 +816,14 @@
       badge.className = 'tier-badge pro'; badge.textContent = 'PRO';
       wm.classList.add('hidden-wm');
       note.textContent = 'Pro — без водяного знака, экспорт до 1080p WEBM';
+      avatar.setWatermarkEnabled(false);
     } else {
       badge.className = 'tier-badge free'; badge.textContent = 'FREE';
       wm.classList.remove('hidden-wm');
       note.textContent = 'Бесплатная версия — с водяным знаком';
+      avatar.setWatermarkEnabled(true);
     }
+    updateQualitySelectors();
   }
 
   // ══════════════════════════════════════════

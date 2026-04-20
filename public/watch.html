@@ -29,6 +29,7 @@
     #status {
       font-size: 14px; color: #8888a8;
       margin-bottom: 16px;
+      min-height: 18px;
     }
     #status.connected { color: #00ff88; }
     #status.error { color: #ff1744; }
@@ -45,6 +46,7 @@
       width: 100%; height: 100%;
       object-fit: contain;
       background: #000;
+      display: block;
     }
     .live-badge {
       position: absolute; top: 12px; left: 12px;
@@ -58,6 +60,32 @@
     }
     .live-badge.active { display: block; animation: pulse 1.5s ease infinite; }
     @keyframes pulse { 50% { opacity: 0.5; } }
+    .tap-overlay {
+      position: absolute; inset: 0;
+      display: none;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.7); cursor: pointer;
+      flex-direction: column; gap: 12px;
+      z-index: 10;
+    }
+    .tap-overlay.show { display: flex; }
+    .tap-overlay__icon {
+      width: 60px; height: 60px; border-radius: 50%;
+      background: rgba(0,240,255,0.2);
+      border: 2px solid #00f0ff;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .tap-overlay__icon::before {
+      content: ''; width: 0; height: 0;
+      border-left: 18px solid #00f0ff;
+      border-top: 12px solid transparent;
+      border-bottom: 12px solid transparent;
+      margin-left: 4px;
+    }
+    .tap-overlay__text {
+      color: #00f0ff; font-family: 'Orbitron', sans-serif;
+      font-size: 12px; letter-spacing: 2px;
+    }
     .room-info {
       margin-top: 16px; text-align: center;
       font-size: 12px; color: #555570;
@@ -72,6 +100,14 @@
       line-height: 1.8; text-align: center;
     }
     .help strong { color: #8888a8; }
+    .retry-btn {
+      margin-top: 16px; padding: 10px 24px;
+      background: linear-gradient(135deg, #00f0ff, #8b00ff);
+      color: white; border: none; border-radius: 8px;
+      font-family: 'Exo 2', sans-serif; font-size: 13px; font-weight: 600;
+      cursor: pointer; display: none;
+    }
+    .retry-btn.show { display: inline-block; }
   </style>
 </head>
 <body>
@@ -81,13 +117,19 @@
   <div id="status">Подключение к комнате...</div>
 
   <div class="video-wrap">
-    <video id="remote-video" autoplay playsinline></video>
+    <video id="remote-video" autoplay playsinline muted></video>
     <div class="live-badge" id="live-badge">LIVE</div>
+    <div class="tap-overlay" id="tap-overlay">
+      <div class="tap-overlay__icon"></div>
+      <div class="tap-overlay__text">НАЖМИТЕ ДЛЯ ВОСПРОИЗВЕДЕНИЯ</div>
+    </div>
   </div>
 
   <div class="room-info">
     Комната: <span class="room-id" id="room-id-display">---</span>
   </div>
+
+  <button class="retry-btn" id="retry-btn">Переподключиться</button>
 
   <div class="help">
     <strong>Как это работает:</strong><br>
@@ -97,139 +139,273 @@
   </div>
 
   <script>
-    (async function() {
-      const pathParts = window.location.pathname.split('/');
-      const roomId = pathParts[pathParts.length - 1];
-      const statusEl = document.getElementById('status');
-      const videoEl = document.getElementById('remote-video');
-      const liveBadge = document.getElementById('live-badge');
-      document.getElementById('room-id-display').textContent = roomId;
+  (function () {
+    const pathParts = window.location.pathname.split('/').filter(Boolean);
+    const roomId = pathParts[pathParts.length - 1];
+    const statusEl = document.getElementById('status');
+    const videoEl = document.getElementById('remote-video');
+    const liveBadge = document.getElementById('live-badge');
+    const retryBtn = document.getElementById('retry-btn');
+    const tapOverlay = document.getElementById('tap-overlay');
+    document.getElementById('room-id-display').textContent = roomId;
 
-      if (!roomId || roomId === 'watch') {
-        statusEl.textContent = 'Укажите ID комнаты в URL: /watch/<roomId>';
-        statusEl.className = 'error';
-        return;
+    let pc = null;
+    let peerId = null;
+    let offerPollTimer = null;
+    let candidatesPollTimer = null;
+    let hasRemoteDescription = false;
+    let pendingIceCandidates = [];
+
+    if (!roomId || roomId === 'watch') {
+      setStatus('Укажите ID комнаты в URL: /watch/<roomId>', 'error');
+      return;
+    }
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || '';
+    }
+
+    function clearTimers() {
+      if (offerPollTimer) { clearInterval(offerPollTimer); offerPollTimer = null; }
+      if (candidatesPollTimer) { clearInterval(candidatesPollTimer); candidatesPollTimer = null; }
+    }
+
+    function cleanup() {
+      clearTimers();
+      hasRemoteDescription = false;
+      pendingIceCandidates = [];
+      if (pc) {
+        try { pc.close(); } catch (e) {}
+        pc = null;
       }
+      if (peerId && roomId) {
+        try {
+          const blob = new Blob([JSON.stringify({})], { type: 'application/json' });
+          navigator.sendBeacon(`/api/rtc/room/${roomId}/peer/${peerId}/leave`, blob);
+        } catch (e) {
+          fetch(`/api/rtc/room/${roomId}/peer/${peerId}/leave`, { method: 'POST' }).catch(()=>{});
+        }
+      }
+      peerId = null;
+    }
+
+    function tryPlay() {
+      const p = videoEl.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch((err) => {
+          console.warn('[Watch] autoplay blocked:', err);
+          tapOverlay.classList.add('show');
+        });
+      }
+    }
+
+    tapOverlay.addEventListener('click', () => {
+      videoEl.muted = false;
+      videoEl.play().then(() => {
+        tapOverlay.classList.remove('show');
+      }).catch(() => {
+        // keep showing overlay
+      });
+    });
+
+    async function connect() {
+      cleanup();
+      retryBtn.classList.remove('show');
+      liveBadge.classList.remove('active');
+      tapOverlay.classList.remove('show');
 
       try {
-        // Check if room exists
+        // 1. Check room
+        setStatus('Проверка комнаты...');
         const roomRes = await fetch(`/api/rtc/room/${roomId}`);
         if (!roomRes.ok) {
-          statusEl.textContent = `Комната ${roomId} не найдена`;
-          statusEl.className = 'error';
+          setStatus(`Комната ${roomId} не найдена`, 'error');
+          retryBtn.classList.add('show');
           return;
         }
         const roomInfo = await roomRes.json();
         if (!roomInfo.active) {
-          statusEl.textContent = 'Стрим завершён';
-          statusEl.className = 'error';
+          setStatus('Стрим завершён', 'error');
+          retryBtn.classList.add('show');
           return;
         }
 
-        statusEl.textContent = 'Получение SDP offer...';
-
-        // Get streamer's offer
-        const offerRes = await fetch(`/api/rtc/room/${roomId}/offer`);
-        const offer = await offerRes.json();
-        if (!offer) {
-          statusEl.textContent = 'Стрим ещё не начат — ожидание...';
-          // Poll for offer
-          await pollForOffer(roomId);
+        // 2. Join — get unique peerId
+        setStatus('Регистрация зрителя...');
+        const joinRes = await fetch(`/api/rtc/room/${roomId}/join`, { method: 'POST' });
+        if (!joinRes.ok) {
+          const err = await joinRes.json().catch(()=>({}));
+          setStatus(err.error || 'Не удалось присоединиться', 'error');
+          retryBtn.classList.add('show');
           return;
         }
+        const joinData = await joinRes.json();
+        peerId = joinData.peerId;
 
-        await connectAsViewer(roomId, offer);
-
-      } catch (err) {
-        statusEl.textContent = 'Ошибка подключения: ' + err.message;
-        statusEl.className = 'error';
-      }
-
-      async function pollForOffer(roomId) {
-        let attempts = 0;
-        const interval = setInterval(async () => {
-          attempts++;
-          if (attempts > 60) { // 30 seconds
-            clearInterval(interval);
-            statusEl.textContent = 'Таймаут ожидания стрима';
-            statusEl.className = 'error';
-            return;
-          }
-          try {
-            const res = await fetch(`/api/rtc/room/${roomId}/offer`);
-            const offer = await res.json();
-            if (offer) {
-              clearInterval(interval);
-              await connectAsViewer(roomId, offer);
-            }
-          } catch (e) {}
-        }, 500);
-      }
-
-      async function connectAsViewer(roomId, offer) {
-        statusEl.textContent = 'Устанавливаем WebRTC соединение...';
-
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        // 3. Create RTCPeerConnection
+        pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
         });
 
-        // When we get the remote stream
+        // Note: we do NOT add any transceivers here — the streamer's offer
+        // will create the recv-side mline automatically when we call
+        // setRemoteDescription + createAnswer.
+
         pc.ontrack = (event) => {
-          videoEl.srcObject = event.streams[0];
-          statusEl.textContent = 'Подключено!';
-          statusEl.className = 'connected';
+          console.log('[Watch] ontrack', event.streams.length, 'streams');
+          // Always attach the first received stream
+          const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+          if (videoEl.srcObject !== stream) {
+            videoEl.srcObject = stream;
+            tryPlay();
+          }
+          setStatus('Подключено!', 'connected');
           liveBadge.classList.add('active');
         };
 
-        // Send our ICE candidates as viewer
         pc.onicecandidate = async (event) => {
-          if (event.candidate) {
-            await fetch(`/api/rtc/room/${roomId}/candidate/viewer`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(event.candidate)
-            });
+          if (event.candidate && peerId) {
+            try {
+              await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/candidate/viewer`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(event.candidate.toJSON ? event.candidate.toJSON() : event.candidate)
+              });
+            } catch (e) {}
           }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          if (!pc) return;
+          console.log('[Watch] ICE state:', pc.iceConnectionState);
         };
 
         pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            statusEl.textContent = 'Соединение потеряно';
-            statusEl.className = 'error';
+          if (!pc) return;
+          console.log('[Watch] Connection state:', pc.connectionState);
+          if (pc.connectionState === 'connected') {
+            setStatus('Подключено!', 'connected');
+            liveBadge.classList.add('active');
+
+            // Fallback: if ontrack didn't fire / srcObject empty, pull tracks
+            // from receivers and attach them manually.
+            setTimeout(() => {
+              if (!pc) return;
+              if (!videoEl.srcObject || videoEl.srcObject.getVideoTracks().length === 0) {
+                const receivers = pc.getReceivers().filter(r => r.track && r.track.kind === 'video');
+                if (receivers.length > 0) {
+                  console.log('[Watch] Fallback: attaching via getReceivers');
+                  const stream = new MediaStream(receivers.map(r => r.track));
+                  videoEl.srcObject = stream;
+                  tryPlay();
+                }
+              }
+            }, 1500);
+
+          } else if (pc.connectionState === 'failed') {
+            setStatus('Соединение потеряно — нажмите "Переподключиться"', 'error');
             liveBadge.classList.remove('active');
+            retryBtn.classList.add('show');
+            cleanup();
+          } else if (pc.connectionState === 'disconnected') {
+            // May reconnect on its own; give it some time
+            liveBadge.classList.remove('active');
+            setStatus('Связь нестабильна...', 'error');
           }
         };
 
-        // Set remote offer & create answer
+        // 4. Poll for offer from streamer
+        setStatus('Ожидание стрима от стримера...');
+        let attempts = 0;
+        offerPollTimer = setInterval(async () => {
+          attempts++;
+          if (attempts > 120) {
+            clearInterval(offerPollTimer); offerPollTimer = null;
+            setStatus('Таймаут: стример не отправил offer', 'error');
+            retryBtn.classList.add('show');
+            return;
+          }
+          try {
+            const res = await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/offer`);
+            if (!res.ok) return;
+            const offer = await res.json();
+            if (offer && offer.type === 'offer') {
+              clearInterval(offerPollTimer); offerPollTimer = null;
+              await handleOffer(offer);
+            }
+          } catch (e) {}
+        }, 500);
+
+      } catch (err) {
+        console.error('[Watch] connect error:', err);
+        setStatus('Ошибка подключения: ' + err.message, 'error');
+        retryBtn.classList.add('show');
+      }
+    }
+
+    async function handleOffer(offer) {
+      setStatus('Установка WebRTC соединения...');
+      try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        hasRemoteDescription = true;
+
+        // Flush any queued candidates
+        for (const c of pendingIceCandidates) {
+          try { await pc.addIceCandidate(c); } catch (e) {}
+        }
+        pendingIceCandidates = [];
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        // Send answer to server
-        await fetch(`/api/rtc/room/${roomId}/answer`, {
+        await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/answer`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(answer)
         });
 
         // Poll for streamer's ICE candidates
-        let candidateIdx = 0;
-        const pollCandidates = setInterval(async () => {
+        let cIdx = 0;
+        candidatesPollTimer = setInterval(async () => {
+          if (!pc || !peerId) { clearInterval(candidatesPollTimer); return; }
           try {
-            const res = await fetch(`/api/rtc/room/${roomId}/candidates/streamer?since=${candidateIdx}`);
+            const res = await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/candidates/streamer?since=${cIdx}`);
+            if (!res.ok) return;
             const candidates = await res.json();
             for (const c of candidates) {
-              await pc.addIceCandidate(new RTCIceCandidate(c));
-              candidateIdx++;
+              try {
+                const iceCandidate = new RTCIceCandidate(c);
+                if (hasRemoteDescription) {
+                  await pc.addIceCandidate(iceCandidate);
+                } else {
+                  pendingIceCandidates.push(iceCandidate);
+                }
+              } catch (e) {
+                console.warn('[Watch] ICE add error:', e);
+              }
+              cIdx++;
             }
           } catch (e) {}
-
-          if (pc.connectionState === 'connected') {
-            clearInterval(pollCandidates);
-          }
         }, 500);
+
+      } catch (err) {
+        console.error('[Watch] offer handling error:', err);
+        setStatus('Ошибка установки соединения: ' + err.message, 'error');
+        retryBtn.classList.add('show');
       }
-    })();
+    }
+
+    retryBtn.addEventListener('click', connect);
+    window.addEventListener('beforeunload', cleanup);
+    window.addEventListener('pagehide', cleanup);
+
+    // Start
+    connect();
+  })();
   </script>
 </body>
 </html>
