@@ -10,11 +10,10 @@
     recordedChunks: [],
     selectedTeam: null,
 
-    // Streaming (multi-viewer)
     streamRoomId: null,
-    streamStream: null,                 // MediaStream from avatar composite canvas
-    streamerPeers: new Map(),           // peerId -> { pc, iceIndex, candidatePollTimer, connected }
-    streamerPollTimer: null,            // polls for new pending viewers
+    streamStream: null,                 
+    streamerPeers: new Map(),         
+    streamerPollTimer: null,            
 
     recordQuality: '720p',
     streamQuality: '720p'
@@ -22,10 +21,6 @@
 
   let mocap = null;
   let avatar = null;
-
-  // ══════════════════════════════════════════
-  //  Init
-  // ══════════════════════════════════════════
 
   async function init() {
     console.log('[App] КиберОблик v2.1 starting...');
@@ -67,7 +62,6 @@
     await loadTeams();
     await sleep(200);
 
-    // Initial watermark sync
     avatar.setWatermarkEnabled(!state.isPro);
 
     const loader = document.getElementById('loader');
@@ -81,12 +75,8 @@
     console.log('[App] Ready!');
   }
 
-  // ══════════════════════════════════════════
-  //  UI Setup
-  // ══════════════════════════════════════════
 
   function setupUI() {
-    // Tabs
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -108,7 +98,6 @@
       sensVal.textContent = parseFloat(sensSlider.value).toFixed(1);
     });
 
-    // Equipment
     document.querySelectorAll('.equip-card').forEach(card => {
       card.addEventListener('click', () => {
         const active = avatar.toggleEquipment(card.dataset.equip);
@@ -116,7 +105,6 @@
       });
     });
 
-    // Team colors
     document.getElementById('color-primary').addEventListener('input', (e) => {
       avatar.setTeamColors(e.target.value, document.getElementById('color-accent').value);
     });
@@ -140,7 +128,6 @@
       updateQualitySelectors();
     });
 
-    // Settings modal
     document.getElementById('btn-settings').addEventListener('click', () => {
       document.getElementById('modal-settings').classList.remove('hidden');
     });
@@ -152,7 +139,6 @@
         document.getElementById('modal-settings').classList.add('hidden');
     });
 
-    // Help modal
     const btnHelp = document.getElementById('btn-help');
     const modalHelp = document.getElementById('modal-help');
     if (btnHelp && modalHelp) {
@@ -206,10 +192,6 @@
   function getBitrate(quality) {
     return quality === '1080p' ? 5000000 : 2500000;
   }
-
-  // ══════════════════════════════════════════
-  //  Resizable + Draggable Camera PiP
-  // ══════════════════════════════════════════
 
   function setupResizablePiP() {
     const pip = document.getElementById('cam-pip');
@@ -313,10 +295,6 @@
     fill.style.width = (level * 100) + '%';
   }
 
-  // ══════════════════════════════════════════
-  //  Camera
-  // ══════════════════════════════════════════
-
   async function toggleCamera() {
     const btn = document.getElementById('btn-start-cam');
     const pip = document.getElementById('cam-pip');
@@ -329,7 +307,7 @@
       avatar._hasExternalInput = false;
       document.getElementById('track-face').classList.remove('active');
       document.getElementById('track-body').classList.remove('active');
-      // Hide audio level indicator
+
       const audioEl = document.getElementById('audio-level');
       if (audioEl) audioEl.remove();
     } else {
@@ -350,9 +328,6 @@
     }
   }
 
-  // ══════════════════════════════════════════
-  //  WebRTC Streaming (multi-viewer)
-  // ══════════════════════════════════════════
 
   async function toggleStreaming() {
     const btn = document.getElementById('btn-stream');
@@ -369,19 +344,14 @@
       const { roomId } = await res.json();
       state.streamRoomId = roomId;
 
-      // Single composited MediaStream — created ONCE and reused for every viewer.
       const { width, height } = getResolution(state.streamQuality);
       state.streamStream = avatar.getCanvasStream(30, width, height);
 
-      // Add audio track if available
       const audioTrack = mocap.getAudioTrack();
       if (audioTrack) {
         state.streamStream.addTrack(audioTrack);
       }
 
-      // Warm up the composite canvas — give it ~200ms to generate real frames
-      // before peers start asking for offers. Otherwise the outgoing track can
-      // be "empty" at negotiation time, which some browsers handle badly.
       await sleep(300);
 
       state.isStreaming = true;
@@ -400,12 +370,10 @@
   }
 
   async function stopStreaming() {
-    // Stop polling
     if (state.streamerPollTimer) {
       clearInterval(state.streamerPollTimer);
       state.streamerPollTimer = null;
     }
-    // Close all peer connections
     state.streamerPeers.forEach((peer) => {
       if (peer.candidatePollTimer) clearInterval(peer.candidatePollTimer);
       try { peer.pc.close(); } catch (e) {}
@@ -418,7 +386,6 @@
       } catch (e) {}
     }
 
-    // Stop composite loop inside avatar
     avatar.stopCanvasStream();
     state.streamStream = null;
 
@@ -469,7 +436,6 @@
       };
       state.streamerPeers.set(peerId, peerState);
 
-      // Add all tracks from composite stream (video + audio).
       if (state.streamStream) {
         state.streamStream.getTracks().forEach(track => {
           pc.addTrack(track, state.streamStream);
@@ -509,7 +475,6 @@
           try { pc.close(); } catch (e) {}
           state.streamerPeers.delete(peerId);
         } else if (pc.connectionState === 'disconnected') {
-          // Viewer's page may be reloading — wait a bit; failed will fire if gone
           if (peerState.connected) {
             peerState.connected = false;
             updateViewerCount(getConnectedViewerCount());
@@ -517,7 +482,6 @@
         }
       };
 
-      // Create and send offer
       const offer = await pc.createOffer({
         offerToReceiveAudio: false,
         offerToReceiveVideo: false
@@ -531,7 +495,6 @@
       });
       console.log('[Stream] Sent offer to', peerId);
 
-      // Poll for answer + viewer ICE candidates
       let attempts = 0;
       peerState.candidatePollTimer = setInterval(async () => {
         attempts++;
@@ -540,7 +503,6 @@
           return;
         }
         try {
-          // Fetch answer first if we haven't set it yet
           if (!peerState.remoteSet) {
             const ansRes = await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/answer`);
             if (ansRes.ok) {
@@ -550,7 +512,6 @@
                   await pc.setRemoteDescription(new RTCSessionDescription(answer));
                   peerState.remoteSet = true;
                   console.log('[Stream] Got answer from', peerId);
-                  // Flush queued candidates
                   for (const c of peerState.pendingIce) {
                     try { await pc.addIceCandidate(c); } catch (e) {}
                   }
@@ -562,7 +523,6 @@
             }
           }
 
-          // Fetch viewer's ICE candidates (can arrive even before answer in some flows)
           const cRes = await fetch(`/api/rtc/room/${roomId}/peer/${peerId}/candidates/viewer?since=${peerState.iceIndex}`);
           if (cRes.ok) {
             const candidates = await cRes.json();
@@ -606,10 +566,8 @@
 
   function startRecording() {
     const { width, height } = getResolution(state.recordQuality);
-    // Use composite stream so watermark is baked in
     const canvasStream = avatar.getCanvasStream(30, width, height);
 
-    // Add audio track if available
     const audioTrack = mocap.getAudioTrack();
     if (audioTrack) {
       canvasStream.addTrack(audioTrack);
@@ -643,7 +601,6 @@
       const webmBlob = new Blob(state.recordedChunks, { type: selectedMime });
       downloadBlob(webmBlob, `cyberoblik_${Date.now()}.webm`);
       showToast('Запись сохранена в WebM', 'success');
-      // Stop composite loop ONLY if we're not also streaming
       if (!state.isStreaming) avatar.stopCanvasStream();
     };
 
@@ -740,16 +697,12 @@
           if (b) b.textContent = 'Копировать';
         }, 1500);
       } catch (e) {
-        // Fallback
         const inp = document.getElementById('stream-url-input');
         inp.select(); document.execCommand('copy');
       }
     });
   }
 
-  // ══════════════════════════════════════════
-  //  Teams
-  // ══════════════════════════════════════════
 
   async function loadTeams() {
     try {
@@ -782,9 +735,6 @@
     });
   }
 
-  // ══════════════════════════════════════════
-  //  Save
-  // ══════════════════════════════════════════
 
   async function saveAvatar() {
     const config = avatar.getConfig();
@@ -804,9 +754,6 @@
     } catch (e) { showToast('Ошибка сохранения', 'error'); }
   }
 
-  // ══════════════════════════════════════════
-  //  Tier
-  // ══════════════════════════════════════════
 
   function updateTierUI() {
     const badge = document.querySelector('.tier-badge');
@@ -826,9 +773,6 @@
     updateQualitySelectors();
   }
 
-  // ══════════════════════════════════════════
-  //  Toast
-  // ══════════════════════════════════════════
 
   function showToast(message, type = 'info') {
     const existing = document.querySelector('.toast');

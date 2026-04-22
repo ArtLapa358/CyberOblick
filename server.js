@@ -13,7 +13,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 const avatarConfigs = new Map();
 const signalingRooms = new Map();
 
-// ── Avatar API ──
 app.post('/api/avatar/save', (req, res) => {
   const { userId, config } = req.body;
   if (!config) return res.status(400).json({ error: 'Config required' });
@@ -26,7 +25,6 @@ app.get('/api/avatar/:id', (req, res) => {
   r ? res.json(r) : res.status(404).json({ error: 'Not found' });
 });
 
-// ── Teams ──
 const teamPresets = [
   { id: 'navi', name: 'Natus Vincere', colors: ['#FFDE00', '#1A1A1A'] },
   { id: 'spirit', name: 'Team Spirit', colors: ['#E31E24', '#FFFFFF'] },
@@ -37,18 +35,11 @@ const teamPresets = [
 ];
 app.get('/api/teams', (req, res) => res.json(teamPresets));
 
-// ══════════════════════════════════════════
-//  WebRTC Signaling — multi-viewer architecture
-//  Each viewer gets its own peer session (peerId)
-// ══════════════════════════════════════════
-
 app.post('/api/rtc/room', (req, res) => {
   const roomId = uuidv4().slice(0, 8);
   signalingRooms.set(roomId, {
     id: roomId,
-    // Map<peerId, { offer, answer, streamerCandidates: [], viewerCandidates: [] }>
     peers: new Map(),
-    // Queue of viewer peerIds that need an offer from streamer
     pendingViewers: [],
     createdAt: Date.now(),
     active: true
@@ -56,7 +47,6 @@ app.post('/api/rtc/room', (req, res) => {
   res.json({ roomId });
 });
 
-// Room info for viewer
 app.get('/api/rtc/room/:roomId', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -68,7 +58,6 @@ app.get('/api/rtc/room/:roomId', (req, res) => {
   });
 });
 
-// Active rooms list
 app.get('/api/rtc/rooms', (req, res) => {
   const rooms = [];
   signalingRooms.forEach(r => {
@@ -77,10 +66,6 @@ app.get('/api/rtc/rooms', (req, res) => {
   res.json(rooms);
 });
 
-// ══════════════════════════════════════════
-//  Viewer registers — gets a unique peerId
-//  This is what viewer calls first to join
-// ══════════════════════════════════════════
 app.post('/api/rtc/room/:roomId/join', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -99,9 +84,6 @@ app.post('/api/rtc/room/:roomId/join', (req, res) => {
   res.json({ peerId });
 });
 
-// ══════════════════════════════════════════
-//  Streamer polls for viewers awaiting offers
-// ══════════════════════════════════════════
 app.get('/api/rtc/room/:roomId/pending-viewers', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -110,9 +92,6 @@ app.get('/api/rtc/room/:roomId/pending-viewers', (req, res) => {
   res.json({ peerIds: pending });
 });
 
-// ══════════════════════════════════════════
-//  SDP offer per-peer (streamer → viewer)
-// ══════════════════════════════════════════
 app.post('/api/rtc/room/:roomId/peer/:peerId/offer', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -130,9 +109,6 @@ app.get('/api/rtc/room/:roomId/peer/:peerId/offer', (req, res) => {
   res.json(peer.offer || null);
 });
 
-// ══════════════════════════════════════════
-//  SDP answer per-peer (viewer → streamer)
-// ══════════════════════════════════════════
 app.post('/api/rtc/room/:roomId/peer/:peerId/answer', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -150,9 +126,6 @@ app.get('/api/rtc/room/:roomId/peer/:peerId/answer', (req, res) => {
   res.json(peer.answer || null);
 });
 
-// ══════════════════════════════════════════
-//  ICE candidates per-peer by role
-// ══════════════════════════════════════════
 app.post('/api/rtc/room/:roomId/peer/:peerId/candidate/:role', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -173,14 +146,12 @@ app.get('/api/rtc/room/:roomId/peer/:peerId/candidates/:role', (req, res) => {
   res.json(peer[key].slice(since));
 });
 
-// Close room
 app.post('/api/rtc/room/:roomId/close', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (room) room.active = false;
   res.json({ success: true });
 });
 
-// Leave peer (viewer disconnected)
 app.post('/api/rtc/room/:roomId/peer/:peerId/leave', (req, res) => {
   const room = signalingRooms.get(req.params.roomId);
   if (!room) return res.json({ success: true });
@@ -188,7 +159,6 @@ app.post('/api/rtc/room/:roomId/peer/:peerId/leave', (req, res) => {
   res.json({ success: true });
 });
 
-// ── Export ──
 app.post('/api/export', (req, res) => {
   const { resolution, tier } = req.body;
   const isPro = tier === 'pro';
@@ -198,7 +168,6 @@ app.post('/api/export', (req, res) => {
   res.json({ success: true, watermark: !isPro, resolution: resolution || '720p', format: 'mp4' });
 });
 
-// Cleanup (rooms older than 1h)
 setInterval(() => {
   const now = Date.now();
   signalingRooms.forEach((room, key) => {
@@ -206,7 +175,6 @@ setInterval(() => {
   });
 }, 30 * 60 * 1000);
 
-// Watch page
 app.get('/watch/:roomId', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'watch.html'));
 });

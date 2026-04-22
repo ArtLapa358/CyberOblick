@@ -205,7 +205,6 @@
       videoEl.play().then(() => {
         tapOverlay.classList.remove('show');
       }).catch(() => {
-        // keep showing overlay
       });
     });
 
@@ -216,7 +215,6 @@
       tapOverlay.classList.remove('show');
 
       try {
-        // 1. Check room
         setStatus('Проверка комнаты...');
         const roomRes = await fetch(`/api/rtc/room/${roomId}`);
         if (!roomRes.ok) {
@@ -231,7 +229,6 @@
           return;
         }
 
-        // 2. Join — get unique peerId
         setStatus('Регистрация зрителя...');
         const joinRes = await fetch(`/api/rtc/room/${roomId}/join`, { method: 'POST' });
         if (!joinRes.ok) {
@@ -243,7 +240,6 @@
         const joinData = await joinRes.json();
         peerId = joinData.peerId;
 
-        // 3. Create RTCPeerConnection
         pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -251,13 +247,9 @@
           ]
         });
 
-        // Note: we do NOT add any transceivers here — the streamer's offer
-        // will create the recv-side mline automatically when we call
-        // setRemoteDescription + createAnswer.
 
         pc.ontrack = (event) => {
           console.log('[Watch] ontrack', event.streams.length, 'streams');
-          // Always attach the first received stream
           const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
           if (videoEl.srcObject !== stream) {
             videoEl.srcObject = stream;
@@ -291,8 +283,6 @@
             setStatus('Подключено!', 'connected');
             liveBadge.classList.add('active');
 
-            // Fallback: if ontrack didn't fire / srcObject empty, pull tracks
-            // from receivers and attach them manually.
             setTimeout(() => {
               if (!pc) return;
               if (!videoEl.srcObject || videoEl.srcObject.getVideoTracks().length === 0) {
@@ -312,13 +302,11 @@
             retryBtn.classList.add('show');
             cleanup();
           } else if (pc.connectionState === 'disconnected') {
-            // May reconnect on its own; give it some time
             liveBadge.classList.remove('active');
             setStatus('Связь нестабильна...', 'error');
           }
         };
 
-        // 4. Poll for offer from streamer
         setStatus('Ожидание стрима от стримера...');
         let attempts = 0;
         offerPollTimer = setInterval(async () => {
@@ -353,7 +341,6 @@
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         hasRemoteDescription = true;
 
-        // Flush any queued candidates
         for (const c of pendingIceCandidates) {
           try { await pc.addIceCandidate(c); } catch (e) {}
         }
@@ -368,7 +355,6 @@
           body: JSON.stringify(answer)
         });
 
-        // Poll for streamer's ICE candidates
         let cIdx = 0;
         candidatesPollTimer = setInterval(async () => {
           if (!pc || !peerId) { clearInterval(candidatesPollTimer); return; }
@@ -403,7 +389,6 @@
     window.addEventListener('beforeunload', cleanup);
     window.addEventListener('pagehide', cleanup);
 
-    // Start
     connect();
   })();
   </script>

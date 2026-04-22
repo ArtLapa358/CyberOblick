@@ -1,12 +1,3 @@
-/**
- * КиберОблик v2.2 — 3D Avatar Renderer (avatar3d.js)
- * Original avatar geometry restored. Composite canvas for baking watermark.
- *
- * CRITICAL FIX (streaming):
- *   - Composite canvas/stream is created ONCE per streaming session and
- *     REUSED for every viewer. Never recreated during a session.
- */
-
 class Avatar3D {
   constructor(canvasElement) {
     this.canvas = canvasElement;
@@ -23,7 +14,6 @@ class Avatar3D {
     this.lights = [];
     this._hasExternalInput = false;
 
-    // Watermark / compositing
     this._watermarkEnabled = true;
     this._compositeCanvas = null;
     this._compositeCtx = null;
@@ -67,10 +57,6 @@ class Avatar3D {
     console.log('[Avatar3D] Scene initialized');
   }
 
-  // ══════════════════════════════════════════
-  //  Scene Setup
-  // ══════════════════════════════════════════
-
   _setupLights() {
     this.scene.add(new THREE.AmbientLight(0x334455, 0.4));
     const key = new THREE.DirectionalLight(0x00f0ff, 0.8);
@@ -89,9 +75,6 @@ class Avatar3D {
     this.scene.fog = null;
   }
 
-  // ══════════════════════════════════════════
-  //  Procedural Avatar — ORIGINAL geometry
-  // ══════════════════════════════════════════
 
   _createAvatar() {
     this.avatar = new THREE.Group();
@@ -166,7 +149,6 @@ class Avatar3D {
 
     torsoGroup.add(headGroup);
 
-    // LEFT ARM
     const leftShoulderPivot = new THREE.Group();
     leftShoulderPivot.position.set(-0.2, 0.2, 0);
     this.bones.leftShoulder = leftShoulderPivot;
@@ -192,7 +174,6 @@ class Avatar3D {
     leftShoulderPivot.add(leftElbowPivot);
     torsoGroup.add(leftShoulderPivot);
 
-    // RIGHT ARM
     const rightShoulderPivot = new THREE.Group();
     rightShoulderPivot.position.set(0.2, 0.2, 0);
     this.bones.rightShoulder = rightShoulderPivot;
@@ -220,7 +201,6 @@ class Avatar3D {
 
     hipRoot.add(torsoGroup);
 
-    // LEGS
     const leftLegPivot = new THREE.Group();
     leftLegPivot.position.set(-0.08, -0.05, 0);
     this.bones.leftLeg = leftLegPivot;
@@ -265,9 +245,6 @@ class Avatar3D {
     this.scene.add(this.avatar);
   }
 
-  // ══════════════════════════════════════════
-  //  Bone Updates — ORIGINAL
-  // ══════════════════════════════════════════
 
   updateFace(faceData, options = { head: true, body: true }) {
     if (!faceData || !this.bones.head) return;
@@ -329,9 +306,6 @@ class Avatar3D {
     }
   }
 
-  // ══════════════════════════════════════════
-  //  Equipment — ORIGINAL
-  // ══════════════════════════════════════════
 
   toggleEquipment(equipId) {
     if (this.equipment.has(equipId)) {
@@ -425,13 +399,6 @@ class Avatar3D {
     }
   }
 
-  // ══════════════════════════════════════════
-  //  Composite canvas (watermark bake)
-  //
-  //  getCanvasStream() is IDEMPOTENT — returns the same MediaStream instance
-  //  on repeated calls within a session. This is critical so every viewer's
-  //  RTCPeerConnection can attach the same track.
-  // ══════════════════════════════════════════
 
   setWatermarkEnabled(enabled) {
     this._watermarkEnabled = !!enabled;

@@ -1,9 +1,3 @@
-/**
- * КиберОблик v2.0 — Motion Capture Module (mocap.js)
- * MediaPipe Face Mesh + Body estimation
- * Extracts: head rotation, expressions, torso lean, shoulder estimation
- */
-
 class MocapEngine {
   constructor() {
     this.video = null;
@@ -16,24 +10,20 @@ class MocapEngine {
     this.trackBody = true;
     this.sensitivity = 1.0;
 
-    // Performance
     this.frameCount = 0;
     this.lastFpsTime = performance.now();
     this.currentFps = 0;
 
-    // Callbacks
     this.onFaceDetected = null;
     this.onFpsUpdate = null;
     this.onTrackingStatus = null;
 
-    // Audio
     this.audioTrack = null;
     this.audioContext = null;
     this.analyser = null;
     this.audioLevel = 0;
     this.onAudioLevelUpdate = null;
 
-    // Smoothing
     this._faceSmoothBuffer = [];
     this._smoothFrames = 3;
   }
@@ -65,7 +55,6 @@ class MocapEngine {
     this.video.srcObject = stream;
     await this.video.play();
 
-    // Extract audio track
     this.audioTrack = stream.getAudioTracks()[0];
     if (this.audioTrack) {
       this.audioContext = new AudioContext();
@@ -110,13 +99,12 @@ class MocapEngine {
       if (this.onFpsUpdate) this.onFpsUpdate(this.currentFps);
     }
 
-    // Update audio level
     if (this.analyser) {
       const bufferLength = this.analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
       this.analyser.getByteFrequencyData(dataArray);
       const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-      this.audioLevel = average / 255; // Normalize to 0-1
+      this.audioLevel = average / 255; 
       if (this.onAudioLevelUpdate) this.onAudioLevelUpdate(this.audioLevel);
     }
 
@@ -124,7 +112,7 @@ class MocapEngine {
       if (this.video.readyState >= 2 && (this.trackFace || this.trackBody)) {
         await this.faceMesh.send({ image: this.video });
       }
-    } catch (e) { /* skip dropped frames */ }
+    } catch (e) {}
 
     requestAnimationFrame(() => this._trackingLoop());
   }
@@ -146,9 +134,7 @@ class MocapEngine {
     }
   }
 
-  /**
-   * Extract face data: head rotation, expressions, torso estimation
-   */
+
   _extractFaceData(landmarks) {
     if (!landmarks || landmarks.length < 468) return null;
     const s = this.sensitivity;
@@ -159,14 +145,12 @@ class MocapEngine {
     const forehead = landmarks[10];
     const chin = landmarks[152];
 
-    // ── Head Rotation ──
     const earMidX = (leftEar.x + rightEar.x) / 2;
     const yaw = (nose.x - earMidX) * 3.0 * s;
     const faceMidY = (forehead.y + chin.y) / 2;
     const pitch = (nose.y - faceMidY) * 3.0 * s;
     const roll = Math.atan2(rightEar.y - leftEar.y, rightEar.x - leftEar.x) * s;
 
-    // ── Expressions ──
     const upperLip = landmarks[13];
     const lowerLip = landmarks[14];
     const mouthOpen = Math.min(Math.abs(lowerLip.y - upperLip.y) * 10 * s, 1);
@@ -184,16 +168,12 @@ class MocapEngine {
     const mouthWidth = Math.abs(rightMouth.x - leftMouth.x);
     const smile = Math.min(Math.max(0, (mouthWidth - 0.08) * 10) * s, 1);
 
-    // ── Torso estimation from face position ──
-    // When head moves left/right → torso leans slightly
-    // When head tilts → shoulders follow
-    const headPosX = nose.x - 0.5;  // -0.5..0.5 range
+    const headPosX = nose.x - 0.5;
     const headPosY = -(nose.y - 0.5);
-    const torsoLeanX = headPosX * 0.3; // subtle follow
-    const torsoLeanZ = roll * 0.4;     // shoulder tilt follows head roll
-    const torsoLeanY = yaw * 0.25;     // torso turns slightly with head
+    const torsoLeanX = headPosX * 0.3;
+    const torsoLeanZ = roll * 0.4; 
+    const torsoLeanY = yaw * 0.25; 
 
-    // Shoulder estimation from ear positions (approximates shoulder line)
     const shoulderWidth = Math.abs(rightEar.x - leftEar.x);
     const shoulderTilt = Math.atan2(rightEar.y - leftEar.y, rightEar.x - leftEar.x);
 
@@ -201,14 +181,12 @@ class MocapEngine {
       position: { x: headPosX, y: headPosY, z: nose.z },
       rotation: { yaw, pitch, roll },
       expressions: { mouthOpen, leftBlink, rightBlink, leftBrowRaise, rightBrowRaise, smile },
-      // Body estimation from face
       body: {
         torsoLeanX,
         torsoLeanY,
         torsoLeanZ,
         shoulderTilt,
         shoulderWidth,
-        // Leg sway (subtle, derived from torso)
         hipShiftX: headPosX * 0.15,
         hipShiftY: headPosY * 0.08
       },
